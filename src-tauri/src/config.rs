@@ -1,6 +1,6 @@
 // Desktop config persistence. Mirrors src/env.js getUserHome():
 //   CANVAS_USER_HOME override → else ~/.canvas (unix) / ~/Canvas (windows).
-// Config lives at <userHome>/config/desktop.json.
+// Config lives at <userHome>/config/canvas-desktop.json.
 use std::fs;
 use std::path::PathBuf;
 
@@ -19,7 +19,7 @@ fn user_home() -> PathBuf {
 }
 
 fn config_file() -> PathBuf {
-    user_home().join("config").join("desktop.json")
+    user_home().join("config").join("canvas-desktop.json")
 }
 
 #[tauri::command]

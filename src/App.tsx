@@ -86,13 +86,17 @@ export default function App() {
   }, [])
 
   const handleLogout = useCallback(async () => {
-    setConfig((prev) => ({ ...prev, token: undefined, boundContextId: undefined }))
-    await saveConfig({ token: null, boundContextId: null })
+    setConfig((prev) => ({ ...prev, token: undefined, boundContextId: undefined, boundContext: undefined }))
+    await saveConfig({ token: null, boundContextId: null, boundContext: null })
     setPhase('auth')
   }, [])
 
   if (phase === 'loading') {
-    return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>
+    return (
+      <div className="flex h-full items-center justify-center p-4">
+        <div className="rounded-xl bg-card px-6 py-4 text-sm text-muted-foreground shadow-overlay">Loading…</div>
+      </div>
+    )
   }
 
   if (phase === 'auth') {

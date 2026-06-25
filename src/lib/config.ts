@@ -1,11 +1,23 @@
 import { invoke } from '@tauri-apps/api/core'
 
-// Persisted in <CANVAS_USER_HOME>/config/desktop.json (see src-tauri/config.rs).
+// Persisted in <CANVAS_USER_HOME>/config/canvas-desktop.json (see src-tauri/config.rs).
+
+// Snapshot of the currently bound context, cached so the overlay can render its
+// identity (workspace, path, color) without a round-trip on summon.
+export interface BoundContextMeta {
+  id: string
+  url?: string
+  path?: string
+  workspaceName?: string
+  color?: string | null
+}
+
 export interface DesktopConfig {
   serverUrl?: string
   token?: string
   email?: string
   boundContextId?: string
+  boundContext?: BoundContextMeta
   shortcut?: string
   windowX?: number
   windowY?: number
