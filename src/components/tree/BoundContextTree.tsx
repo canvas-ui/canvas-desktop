@@ -7,14 +7,17 @@ import { contextUrlToPath, pathToContextUrl } from '../../lib/context-url'
 import { flattenTree, moveHighlight } from '../../lib/tree-flat'
 import { getContext, getContextTree, setContextUrl } from '../../lib/api'
 
+import type { BoundContextMeta } from '../../lib/config'
+
 interface BoundContextTreeProps {
   serverUrl: string
   token: string
   contextId: string
   focusSignal?: number
+  onMeta?: (meta: BoundContextMeta) => void
 }
 
-export function BoundContextTree({ serverUrl, token, contextId, focusSignal = 0 }: BoundContextTreeProps) {
+export function BoundContextTree({ serverUrl, token, contextId, focusSignal = 0, onMeta }: BoundContextTreeProps) {
   const [context, setContext] = useState<Context | null>(null)
   const [tree, setTree] = useState<TreeNode | null>(null)
   const [selectedPath, setSelectedPath] = useState('/')
@@ -44,13 +47,14 @@ export function BoundContextTree({ serverUrl, token, contextId, focusSignal = 0 
         const path = contextUrlToPath(ctx.url || '', ctx.workspaceName)
         setSelectedPath(path)
         setHighlightPath(path)
+        onMeta?.({ id: ctx.id, url: ctx.url, path, workspaceName: ctx.workspaceName, color: ctx.color ?? null })
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load context')
       }
       await loadTree()
     })()
     return () => { cancelled = true }
-  }, [serverUrl, token, contextId, loadTree])
+  }, [serverUrl, token, contextId, loadTree, onMeta])
 
   useEffect(() => {
     if (focusSignal > 0) searchRef.current?.focus()
@@ -67,12 +71,13 @@ export function BoundContextTree({ serverUrl, token, contextId, focusSignal = 0 
       setSelectedPath(active)
       setHighlightPath(active)
       setContext((c) => (c ? { ...c, url: res?.url ?? newUrl, path: active } : c))
+      onMeta?.({ id: contextId, url: res?.url ?? newUrl, path: active, workspaceName: context.workspaceName, color: context.color ?? null })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to switch context path')
     } finally {
       setIsSaving(false)
     }
-  }, [context, contextId, isSaving, selectedPath, serverUrl, token])
+  }, [context, contextId, isSaving, selectedPath, serverUrl, token, onMeta])
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {

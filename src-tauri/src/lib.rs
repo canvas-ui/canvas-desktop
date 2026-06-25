@@ -41,8 +41,11 @@ pub fn run() {
             let show = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
+            // Tray uses the Canvas mark (white-ring variant from
+            // extensions/browser-extensions/assets/icons), bundled at icons/tray.png.
+            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .tooltip("Canvas")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {

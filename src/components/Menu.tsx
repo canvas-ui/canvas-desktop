@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Layers3, LogOut, Link2, LayoutGrid, Settings, Keyboard, Search } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { DEFAULT_SHORTCUT, type DesktopConfig } from '../lib/config'
+import { DEFAULT_SHORTCUT, type BoundContextMeta, type DesktopConfig } from '../lib/config'
 import { toAccelerator } from '../lib/shortcuts'
 import { useMenuWindowPersistence } from '../lib/window'
 import type { Context } from '../lib/types'
@@ -82,8 +82,25 @@ export function Menu({ config, activateSignal, onUpdateConfig, onLogout }: MenuP
     return () => window.removeEventListener('keydown', onKey)
   }, [boundId])
 
+  // Keep the cached context snapshot fresh as the bound tree loads / switches path.
+  const persistBoundContext = useCallback((meta: BoundContextMeta) => {
+    onUpdateConfig({ boundContext: meta })
+  }, [onUpdateConfig])
+
   const bind = (id: string) => {
-    onUpdateConfig({ boundContextId: id })
+    const c = contexts.find((x) => x.id === id)
+    onUpdateConfig({
+      boundContextId: id,
+      boundContext: c
+        ? {
+            id: c.id,
+            url: c.url,
+            path: contextUrlToPath(c.url || '', c.workspaceName),
+            workspaceName: c.workspaceName,
+            color: c.color ?? null,
+          }
+        : undefined,
+    })
     setPanel('tree')
     setFocusSignal((s) => s + 1)
   }
@@ -156,6 +173,7 @@ export function Menu({ config, activateSignal, onUpdateConfig, onLogout }: MenuP
                       id={`ctx-row-${c.id}`}
                       type="button"
                       onClick={() => (idx === highlightIdx ? bind(c.id) : setHighlightIdx(idx))}
+                      style={{ borderLeft: c.color ? `3px solid ${c.color}` : '3px solid transparent' }}
                       className={cn(
                         'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent',
                         idx === highlightIdx && 'bg-accent ring-2 ring-ring ring-offset-1 ring-offset-background',
@@ -163,7 +181,10 @@ export function Menu({ config, activateSignal, onUpdateConfig, onLogout }: MenuP
                       )}
                     >
                       <span className="flex items-center gap-2 font-medium">
-                        <LayoutGrid className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <LayoutGrid
+                          className={cn('h-4 w-4 shrink-0', !c.color && 'text-muted-foreground')}
+                          style={c.color ? { color: c.color } : undefined}
+                        />
                         <span className="flex-1 truncate">{c.id}</span>
                         {c.id === boundId && <Link2 className="h-3.5 w-3.5 shrink-0 text-secondary" />}
                       </span>
@@ -191,6 +212,7 @@ export function Menu({ config, activateSignal, onUpdateConfig, onLogout }: MenuP
               token={token}
               contextId={boundId}
               focusSignal={focusSignal}
+              onMeta={persistBoundContext}
             />
           )}
 
