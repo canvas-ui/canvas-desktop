@@ -81,3 +81,15 @@ The release workflow builds Linux, macOS (arm64 + x64), and Windows in parallel 
 ```bash
 git submodule update --init src/ui/desktop
 ```
+
+## Licence
+
+Copyright (C) 2026 Jozef Melich.
+
+Canvas Desktop is licensed under the **[AGPL-3.0-or-later](LICENSE)** and under no
+other terms. No commercial exemption is offered for this component, to anyone.
+The Canvas clients stay free software in all cases.
+
+Contributing needs no CLA here, only a DCO sign-off (`git commit -s`). See
+[CONTRIBUTING.md](CONTRIBUTING.md). The dual-licensed Canvas components are
+listed in [NOTICE](NOTICE).
