@@ -24,6 +24,26 @@ Releases are unsigned for now. macOS/Windows may show a gatekeeper warning - ope
 - A running Canvas server (local or remote)
 - Log in through the app, or configure the server URL in settings
 
+## FUSE mounts (Linux)
+
+With [canvas-fuse](https://github.com/canvas-ai/canvas-fuse) installed on
+`$PATH`, the tray gains a **Mounts** submenu listing your contexts and
+workspaces once you're signed in. Toggling an entry spawns one detached
+`canvas-fuse` daemon per mount:
+
+- contexts mount read/write at `~/Canvas/Contexts/<workspace>/<id>` — a flat
+  view of the context's documents (same shape as the WebDAV transport; a
+  derived read-only `.by-schema/` holds the per-schema grouping)
+- workspaces mount read/write at `~/Canvas/Workspaces/<name>` (`Home/`,
+  `Trees/`, `Trash/`)
+
+Mounts outlive the app (each is its own daemon); **Unmount all** or
+`canvas-fuse unmount <path>` tears them down. Optional keys in
+`~/.canvas/config/canvas-desktop.json`:
+
+- `fusePath` — path to the canvas-fuse binary if not on `$PATH`
+- `mountRoot` — base directory for mounts (default `~/Canvas`)
+
 ## Local development
 
 ```bash

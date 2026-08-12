@@ -1,4 +1,5 @@
 mod config;
+mod fuse;
 
 use tauri::Manager;
 
@@ -29,31 +30,33 @@ pub fn run() {
     }
 
     builder
+        .manage(fuse::FuseState::default())
         .invoke_handler(tauri::generate_handler![
             config::load_config,
             config::save_config,
             config::config_path,
+            fuse::set_mountables,
+            fuse::fuse_status,
+            fuse::fuse_available,
         ])
         .setup(|app| {
-            use tauri::menu::{Menu, MenuItem};
             use tauri::tray::TrayIconBuilder;
 
-            let show = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
             // Tray uses the Canvas mark (white-ring variant from
             // extensions/browser-extensions/assets/icons), bundled at icons/tray.png.
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(fuse::TRAY_ID)
                 .icon(tray_icon)
                 .tooltip("Canvas")
-                .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_overlay(app),
                     "quit" => app.exit(0),
-                    _ => {}
+                    id => fuse::handle_menu_event(app, id),
                 })
                 .build(app)?;
+            // Menu is rebuilt on the fly (mountables arrive from the frontend,
+            // mounts toggle); the initial build shows the static items.
+            fuse::rebuild_tray_menu(app.handle())?;
 
             Ok(())
         })

@@ -15,6 +15,14 @@ export interface TreeNode {
   children: TreeNode[]
 }
 
+export interface Workspace {
+  id: string
+  name: string
+  label?: string
+  color?: string | null
+  status?: string
+}
+
 export interface Context {
   id: string
   url?: string

@@ -5,6 +5,8 @@ import { Menu } from './components/Menu'
 import { DEFAULT_SHORTCUT, loadConfig, saveConfig, type DesktopConfig } from './lib/config'
 import { login, ping, verifyToken } from './lib/api'
 import { registerActivation } from './lib/shortcuts'
+import { syncMountables } from './lib/fuse'
+import { invoke } from '@tauri-apps/api/core'
 import { hideToTray, resizeAuthWindow } from './lib/window'
 
 type Phase = 'loading' | 'auth' | 'ready'
@@ -37,6 +39,13 @@ export default function App() {
     if (phase !== 'ready') return
     hideToTray().catch(() => {})
   }, [phase])
+
+  // Populate the tray's Mounts submenu once authenticated (no-op when the
+  // canvas-fuse binary isn't installed).
+  useEffect(() => {
+    if (phase !== 'ready' || !config.serverUrl || !config.token) return
+    syncMountables(config.serverUrl, config.token).catch(() => {})
+  }, [phase, config.serverUrl, config.token])
 
   // (Re)register the global activation accelerator while authenticated.
   useEffect(() => {
@@ -88,6 +97,7 @@ export default function App() {
   const handleLogout = useCallback(async () => {
     setConfig((prev) => ({ ...prev, token: undefined, boundContextId: undefined, boundContext: undefined }))
     await saveConfig({ token: null, boundContextId: null, boundContext: null })
+    invoke('set_mountables', { items: [] }).catch(() => {})
     setPhase('auth')
   }, [])
 
