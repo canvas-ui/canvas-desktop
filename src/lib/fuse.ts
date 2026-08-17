@@ -29,7 +29,7 @@ export async function syncMountables(serverUrl: string, token: string): Promise<
     ...contexts.map((c) => ({
       kind: 'context' as const,
       id: c.workspaceName ? `${c.workspaceName}/${c.id}` : c.id,
-      label: `${c.id} — ${contextUrlToPath(c.url || '', c.workspaceName)}`,
+      label: `${c.id}: ${contextUrlToPath(c.url || '', c.workspaceName)}`,
     })),
     ...workspaces
       .filter((w) => w.name)
