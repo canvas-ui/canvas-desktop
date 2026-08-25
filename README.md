@@ -72,22 +72,23 @@ Installers land in `src-tauri/target/release/bundle/`.
 
 ## CI / releases
 
-GitHub Actions builds on every push to `main`, `develop`, or `dev`, and on PRs to `main`.
-
-| Workflow | Trigger | Output |
-| --- | --- | --- |
-| `build.yml` | push, PR | Per-platform artifacts (7-day retention) |
-| `release.yml` | tag `v*` | GitHub Release with installers |
+`ci.yml` builds the frontend on every push and PR. `release.yml` builds
+installers when a `desktop-v*` tag is pushed.
 
 **Cut a release:**
 
 ```bash
-# bump version in package.json + src-tauri/tauri.conf.json + src-tauri/Cargo.toml
-git tag v0.1.0
-git push origin v0.1.0
+# from the stack root — ships desktop if its code moved
+./canvas-release.sh --apps desktop --bump patch
+
+# from the monorepo root
+npm run release:desktop -- --bump patch
 ```
 
-The release workflow builds Linux, macOS (arm64 + x64), and Windows in parallel via `tauri-apps/tauri-action`.
+That bumps `package.json`, `src-tauri/tauri.conf.json` and `Cargo.toml`
+together (release.yml asserts the tag against `tauri.conf.json`), pushes
+`desktop-v<version>`, and lets CI build Linux, macOS and Windows via
+`tauri-apps/tauri-action`.
 
 **Repo setting required:** Settings → Actions → Workflow permissions → **Read and write**.
 
