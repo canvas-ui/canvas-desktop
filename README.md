@@ -1,116 +1,62 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/canvas-ai/.github/main/banners/canvas-banner_1200x480.jpg" alt="Canvas" width="100%" />
-</p>
-
 # Canvas Desktop
 
-Tauri desktop overlay prototype for Canvas
+Workspace setup and tray mount manager scaffold. Requires `canvas-fuse` 0.9.1+
+and `pm2` on PATH, a running Canvas server, and Linux FUSE support. PM2 and FUSE
+are external prerequisites; the desktop bundle does not install them.
 
-## Install
+## Run
 
-Download the latest build for your platform from [GitHub Releases](https://github.com/canvas-ui/canvas-desktop/releases/latest):
+From `canvas/apps/desktop`:
 
-| Platform | Architecture | Artifact |
-| --- | --- | --- |
-| Linux | x64 | `.deb`, `.AppImage`, or `.rpm` |
-| macOS | Apple Silicon | `.dmg` |
-| macOS | Intel | `.dmg` |
-| Windows | x64 | `.exe` (NSIS installer) |
-
-Releases are unsigned for now. macOS/Windows may show a gatekeeper warning - open via right-click → Open, or allow in system security settings.
-
-## Requirements
-
-- A running Canvas server (local or remote)
-- Log in through the app, or configure the server URL in settings
-
-## FUSE mounts (Linux)
-
-With [canvas-fuse](https://github.com/canvas-ai/canvas-fuse) installed on
-`$PATH`, the tray gains a **Mounts** submenu listing your contexts and
-workspaces once you're signed in. Toggling an entry spawns one detached
-`canvas-fuse` daemon per mount:
-
-- contexts mount read/write at `~/Canvas/Contexts/<workspace>/<id>` — a flat
-  view of the context's documents (same shape as the WebDAV transport; a
-  derived read-only `.by-schema/` holds the per-schema grouping)
-- workspaces mount read/write at `~/Canvas/Workspaces/<name>` (`Home/`,
-  `Trees/`, `Trash/`)
-
-Mounts outlive the app (each is its own daemon); **Unmount all** or
-`canvas-fuse unmount <path>` tears them down. Optional keys in
-`~/.canvas/config/canvas-desktop.json`:
-
-- `fusePath` — path to the canvas-fuse binary if not on `$PATH`
-- `mountRoot` — base directory for mounts (default `~/Canvas`)
-
-## Local development
-
-```bash
-git clone git@github.com:canvas-ui/canvas-desktop.git
-cd canvas-desktop
-npm ci
+```sh
 npm run tauri dev
 ```
 
-**Linux build deps** (Ubuntu/Debian):
+Sign in with email/password or an API token, naming the remote `user@remote-name`
+to match the CLI. Existing CLI remotes appear in the
+remote selector. Add multiple named remotes, select exports for each workspace,
+choose one absolute workspaces root, and save the plan. Start/stop/restart exports
+in the window or tray. Closing the window hides it; quitting the tray leaves
+mount processes running. The tray is available again on the next desktop launch.
 
-```bash
-sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+## Shared configuration
+
+Credentials live exclusively in `~/.canvas/config/remotes.json`, using the CLI's
+`url`, `auth.token`, and optional `device.token` shape. Existing remote metadata
+is preserved. Selecting a remote in desktop does not change the CLI's bound
+remote. `CANVAS_USER_HOME` overrides the configuration home for all integrations;
+on Windows the existing CLI convention is `~/Canvas`.
+
+The new versioned plan lives in `~/.canvas/config/desktop.json`. The old
+`canvas-desktop.json` experiment is ignored; no credentials are imported from
+it. Files are atomically replaced with owner-only permissions on Unix. Stop
+configured mounts before changing a plan, to avoid stranding active mounts.
+
+Each export has one PM2 process and a separate FUSE state/cache:
+
+- `<root>/<remote>/<workspace>/Home`: direct 1:1 workspace Home export.
+- `<root>/<remote>/<workspace>/Trees/<tree>`: one context or directory tree.
+- `<root>/<remote>/<workspace>/Contexts`: that workspace's context views.
+
+Mount only provides a live read/write filesystem. Mirror is Home-only: FUSE
+pins all files, retains an offline cache, uploads writes, and handles remote
+removals through its mirror trash. This is a FUSE-backed mirror, not a separate
+watcher syncing an ordinary folder. Trees and Contexts remain live mounts.
+Git exports are deferred.
+
+PM2 runs foreground FUSE processes, without `--detach`. It stores generated
+process definitions under `~/.canvas/var/desktop-pm2/`. Tokens are never written
+to those definitions or passed in process arguments. Automatic crash restart
+is disabled to avoid remount loops over a stale kernel mount; Restart performs
+cleanup before starting again. PM2 OS-login startup is not configured here.
+
+## Verification
+
+```sh
+npm run build
+cd src-tauri
+cargo test --lib
 ```
 
-You also need [Rust](https://rustup.rs/) stable.
-
-## Build locally
-
-```bash
-npm ci
-npm run tauri build
-```
-
-Installers land in `src-tauri/target/release/bundle/`.
-
-## CI / releases
-
-`ci.yml` builds the frontend on every push and PR. `release.yml` builds
-installers when a `desktop-v*` tag is pushed.
-
-**Cut a release:**
-
-```bash
-# from the stack root — ships desktop if its code moved
-./canvas-release.sh --apps desktop --bump patch
-
-# from the monorepo root
-npm run release:desktop -- --bump patch
-```
-
-That bumps `package.json`, `src-tauri/tauri.conf.json` and `Cargo.toml`
-together (release.yml asserts the tag against `tauri.conf.json`), pushes
-`desktop-v<version>`, and lets CI build Linux, macOS and Windows via
-`tauri-apps/tauri-action`.
-
-**Repo setting required:** Settings → Actions → Workflow permissions → **Read and write**.
-
-**Signing (optional, not configured yet):**
-
-- macOS: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
-- Windows: custom `signCommand` in `tauri.conf.json`
-
-## Submodule in canvas-server
-
-```bash
-git submodule update --init src/ui/desktop
-```
-
-## Licence
-
-Copyright (C) 2026 Jozef Melich.
-
-Canvas Desktop is licensed under the **[AGPL-3.0-or-later](LICENSE)** and under no
-other terms. No commercial exemption is offered for this component, to anyone.
-The Canvas clients stay free software in all cases.
-
-Contributing needs no CLA here, only a DCO sign-off (`git commit -s`). See
-[CONTRIBUTING.md](CONTRIBUTING.md). The dual-licensed Canvas components are
-listed in [NOTICE](NOTICE).
+The screen is a functional setup harness; polished wizard navigation, packaging
+FUSE/PM2, OS startup integration and broader platform validation come later.
