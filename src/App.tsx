@@ -1,3 +1,4 @@
+import { version } from "../package.json";
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import * as backend from './backend';
@@ -97,6 +98,6 @@ export default function App() {
         {['start', 'stop', 'restart'].map(operation => <button key={operation} disabled={busy || dirty || !status?.fuseAvailable || !status?.pm2Available} onClick={() => { void task(async () => { await backend.action(i, operation); await refreshStatus(); }); }}>{operation}</button>)}
       </section>)}
     </>}
-    <footer>Canvas Desktop 0.2.0 · AGPL-3.0-or-later · <a href="https://github.com/canvas-ui/canvas/tree/main/apps/desktop" target="_blank" rel="noreferrer">Source code</a></footer>
+    <footer>Canvas Desktop {version} · AGPL-3.0-or-later · <a href="https://github.com/canvas-ui/canvas/tree/main/apps/desktop" target="_blank" rel="noreferrer">Source code</a></footer>
   </main>;
 }

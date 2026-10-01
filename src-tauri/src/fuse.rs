@@ -261,7 +261,7 @@ mod tests {
         (
             DesktopConfig {
                 version: 1,
-                workspace_root: PathBuf::from("/tmp/Workspaces"),
+                workspace_root: std::env::temp_dir().join("Workspaces"),
                 mounts: vec![],
             },
             Mount {
@@ -277,7 +277,14 @@ mod tests {
     fn home_is_direct_and_mirror_pins_everything() {
         let (cfg, m) = plan("home", "mirror");
         let args = mount_args(&cfg, &m).unwrap();
-        assert_eq!(args[1], "/tmp/Workspaces/local/test/Home");
+        assert_eq!(
+            args[1],
+            cfg.workspace_root
+                .join("local")
+                .join("test")
+                .join("Home")
+                .to_string_lossy()
+        );
         assert!(args
             .windows(2)
             .any(|v| v == ["--backend", "workspace:home"]));
