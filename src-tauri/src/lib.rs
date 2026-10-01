@@ -3,6 +3,9 @@ mod fuse;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Configure WebKit before GTK initialization or any webview is created.
+    #[cfg(target_os = "linux")]
+    configure_linux_renderer();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -40,4 +43,27 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Error running Canvas Desktop");
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_renderer() {
+    // Proprietary NVIDIA drivers can render a blank webview even when the
+    // DMABUF renderer is disabled. This small tray/setup app defaults to the
+    // non-composited path; explicit environment settings remain authoritative.
+    // https://github.com/tauri-apps/tauri/issues/9394
+    for key in [
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+    ] {
+        if std::env::var_os(key).is_none() {
+            std::env::set_var(key, "1");
+        }
+    }
+    // CLUTTER_BACKEND does not select GTK's display backend. Honor an existing
+    // X11 preference without overriding a user's explicit GDK_BACKEND choice.
+    if std::env::var("CLUTTER_BACKEND").as_deref() == Ok("x11")
+        && std::env::var_os("GDK_BACKEND").is_none()
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
 }

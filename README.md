@@ -53,7 +53,7 @@ cleanup before starting again. PM2 OS-login startup is not configured here.
 ## Verification
 
 ```sh
-npm run build
+npm run build:frontend
 cd src-tauri
 cargo test --lib
 ```
@@ -75,3 +75,35 @@ to its GitHub release. Ordinary CI runs only upload workflow artifacts. Linux
 produces Debian/RPM/AppImage packages, macOS DMGs, and Windows MSI/NSIS installers.
 Builds remain unsigned; FUSE and PM2 are still external prerequisites, and
 building a platform installer does not establish filesystem-mount support there.
+
+## Linux / NVIDIA blank window
+
+Before GTK/WebKit starts, desktop defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+and `WEBKIT_DISABLE_COMPOSITING_MODE=1` to avoid blank webviews with proprietary
+NVIDIA drivers. Explicit values for either variable are preserved. When
+`CLUTTER_BACKEND=x11` is set, desktop also defaults `GDK_BACKEND=x11`; an explicit
+GTK backend setting takes precedence. These defaults apply only on Linux.
+
+For an older build, launch with the same workaround:
+
+```sh
+GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 npm run tauri dev
+```
+
+For an installed app, replace `npm run tauri dev` with `canvas-desktop`. Quit
+any existing tray instance before relaunching. The fallback disables accelerated
+WebKit compositing; set `WEBKIT_DISABLE_COMPOSITING_MODE=0` to opt back in when
+your driver supports it.
+
+## Rebuilding the desktop UI
+
+`npm run build` builds the frontend, embeds it in a native release executable,
+and creates installers under `src-tauri/target/release/bundle`. For a Linux
+Debian installer only, use `npm run build -- --bundles deb`. `npm run
+build:frontend` only updates `dist`; it does not replace an installed desktop app.
+
+`npm run tauri dev` loads the local Vite frontend. A packaged app loads the
+frontend embedded when that executable was built, and the CLI desktop launcher
+uses its downloaded release. Quit the existing tray instance before launching
+a rebuilt executable or installing the new package. Check the version footer
+and the “Add or sign in to a remote” form to identify the new scaffold.

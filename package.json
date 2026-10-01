@@ -1,15 +1,16 @@
 {
   "name": "canvas-desktop",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.3",
   "license": "AGPL-3.0-or-later",
   "author": "Jozef Melich <me@idnc.sk>",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tauri build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:frontend": "tsc && vite build"
   },
   "dependencies": {
     "@augmentd-labs/canvas-api-client": "workspace:*",
