@@ -98,6 +98,6 @@ export default function App() {
         {['start', 'stop', 'restart'].map(operation => <button key={operation} disabled={busy || dirty || !status?.fuseAvailable || !status?.pm2Available} onClick={() => { void task(async () => { await backend.action(i, operation); await refreshStatus(); }); }}>{operation}</button>)}
       </section>)}
     </>}
-    <footer>Canvas Desktop {version} · AGPL-3.0-or-later · <a href="https://github.com/canvas-ui/canvas/tree/main/apps/desktop" target="_blank" rel="noreferrer">Source code</a></footer>
+    <footer>Canvas Desktop {version} · AGPL-3.0-or-later · <a href="https://github.com/canvas-ui/canvas-desktop" target="_blank" rel="noreferrer">Source code</a></footer>
   </main>;
 }

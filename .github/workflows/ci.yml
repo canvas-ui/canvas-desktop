@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Fast gate (the required check): versions agree, frontend type-checks and builds.
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: node scripts/verify-desktop-version.mjs
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:frontend
+
+  # Full native installers on every OS, so a broken target shows up in review.
+  desktop:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml

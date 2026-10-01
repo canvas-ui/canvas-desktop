@@ -1,0 +1,87 @@
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Optional v<version> tag whose (existing) Release receives the installers
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Desktop (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Verify desktop versions
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: node scripts/verify-desktop-version.mjs
+      - name: Linux system dependencies (Tauri v2)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl \
+            wget file libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf xdg-utils
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: desktop-${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - name: Native scaffold tests (runner architecture)
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+      - name: Build installers
+        if: inputs.release-tag == ''
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: .
+          args: --target ${{ matrix.target }} -- --locked
+      - name: Build and attach release installers
+        if: inputs.release-tag != ''
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          args: --target ${{ matrix.target }} -- --locked
+          tagName: ${{ inputs.release-tag }}
+          releaseName: Canvas Desktop ${{ inputs.release-tag }}
+          releaseDraft: false
+          prerelease: false
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-desktop-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+          if-no-files-found: error
+          retention-days: 14

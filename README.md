@@ -6,10 +6,9 @@ are external prerequisites; the desktop bundle does not install them.
 
 ## Run
 
-From `canvas/apps/desktop`:
-
 ```sh
-npm run tauri dev
+pnpm install
+pnpm run tauri dev
 ```
 
 Sign in with email/password or an API token, naming the remote `user@remote-name`
@@ -65,13 +64,15 @@ FUSE/PM2, OS startup integration and broader platform validation come later.
 
 Every pull request and push to `main` builds native installers for Linux x64,
 Windows x64, macOS Apple Silicon and macOS Intel. The shared
-`.github/workflows/desktop-build.yml` workflow can also be run manually from
+`.github/workflows/build.yml` workflow can also be run manually from
 GitHub Actions. Download the `canvas-desktop-<target>` artifacts from the run;
 they are retained for 14 days. Builds run the native scaffold tests and verify
 that the JS, Tauri, Cargo and Cargo lock versions agree.
 
-Pushing a `desktop-v<version>` tag runs the same matrix and attaches installers
-to its GitHub release. Ordinary CI runs only upload workflow artifacts. Linux
+A release is a version bump pushed to `main`: `pnpm run release patch` keeps
+package.json, tauri.conf.json, Cargo.toml and Cargo.lock in step, and
+release.yml then creates the `v<version>` GitHub Release and attaches the
+installers from the same matrix. Ordinary CI runs only upload workflow artifacts. Linux
 produces Debian/RPM/AppImage packages, macOS DMGs, and Windows MSI/NSIS installers.
 Builds remain unsigned; FUSE and PM2 are still external prerequisites, and
 building a platform installer does not establish filesystem-mount support there.

@@ -1,0 +1,50 @@
+name: release
+
+# On every push to main: when the version in package.json has no v<version>
+# Release yet, create it, then build the installers on every OS and attach
+# them (build.yml). An unbumped push does nothing. Release = bump + push
+# (`pnpm run release patch` keeps package.json, tauri.conf.json, Cargo.toml and
+# Cargo.lock in step; scripts/verify-desktop-version.mjs gates the build).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/verify-desktop-version.mjs
+          v=$(node -p "require('./package.json').version")
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "v$v already released — nothing to do"
+          else
+            # Created up front so the four parallel builds upload into one Release.
+            gh release create "v$v" --target "$GITHUB_SHA" --title "Canvas Desktop v$v" \
+              --notes "Canvas Desktop installers for Linux (deb, rpm, AppImage), macOS (Intel, Apple Silicon) and Windows. Not code-signed yet."
+            echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build.yml
+    with:
+      release-tag: ${{ needs.prepare.outputs.tag }}
