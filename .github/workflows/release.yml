@@ -1,10 +1,7 @@
 name: release
 
-# On every push to main: when the version in package.json has no v<version>
-# Release yet, create it, then build the installers on every OS and attach
-# them (build.yml). An unbumped push does nothing. Release = bump + push
-# (`pnpm run release patch` keeps package.json, tauri.conf.json, Cargo.toml and
-# Cargo.lock in step; scripts/verify-desktop-version.mjs gates the build).
+# Create or resume a draft at its original commit; publish only after all
+# platform builds and installer validation succeed. Complete releases are skipped.
 
 on:
   push:
@@ -23,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.v.outputs.tag }}
+      ref: ${{ steps.v.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -30,15 +28,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node scripts/verify-desktop-version.mjs
-          v=$(node -p "require('./package.json').version")
-          if gh release view "v$v" >/dev/null 2>&1; then
-            echo "v$v already released — nothing to do"
-          else
-            # Created up front so the four parallel builds upload into one Release.
-            gh release create "v$v" --target "$GITHUB_SHA" --title "Canvas Desktop v$v" \
-              --notes "Canvas Desktop installers for Linux (deb, rpm, AppImage), macOS (Intel, Apple Silicon) and Windows. Not code-signed yet."
-            echo "tag=v$v" >> "$GITHUB_OUTPUT"
-          fi
+          node scripts/desktop-release.mjs prepare
 
   build:
     needs: prepare
@@ -48,3 +38,19 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       release-tag: ${{ needs.prepare.outputs.tag }}
+      build-ref: ${{ needs.prepare.outputs.ref }}
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify installers and publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: node scripts/desktop-release.mjs finalize
