@@ -13,9 +13,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "Canvas Desktop Setup",
-        "width": 960,
-        "height": 720,
+        "title": "Canvas Desktop",
+        "width": 1440,
+        "height": 900,
         "center": true,
         "resizable": true,
         "visible": true

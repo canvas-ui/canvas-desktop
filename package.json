@@ -11,14 +11,17 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:frontend": "tsc && vite build",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:ui": "node scripts/check-ui.mjs"
   },
   "dependencies": {
     "@augmentd-labs/canvas-api-client": "^0.3.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

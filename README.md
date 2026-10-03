@@ -1,7 +1,8 @@
 # Canvas Desktop
 
-Workspace setup and tray mount manager scaffold. Requires `canvas-fuse` 0.9.1+
-and `pm2` on PATH, a running Canvas server, and Linux FUSE support. PM2 and FUSE
+Context-driven desktop with saved multi-canvas arrangements and a tray mount
+manager. Browsing requires a running Canvas server. Mount management additionally
+requires `canvas-fuse` 0.9.1+, `pm2` on PATH, and Linux FUSE support. PM2 and FUSE
 are external prerequisites; the desktop bundle does not install them.
 
 ## Run
@@ -11,12 +12,49 @@ pnpm install
 pnpm run tauri dev
 ```
 
-Sign in with email/password or an API token, naming the remote `user@remote-name`
+Open **Mounts & connections** to sign in with email/password or an API token, naming the remote `user@remote-name`
 to match the CLI. Existing CLI remotes appear in the
 remote selector. Add multiple named remotes, select exports for each workspace,
 choose one absolute workspaces root, and save the plan. Start/stop/restart exports
 in the window or tray. Closing the window hides it; quitting the tray leaves
 mount processes running. The tray is available again on the next desktop launch.
+
+## Desktop navigation
+
+- **Explorer** selects a workspace, a context/directory tree, and a path. The
+  selected layer owns its arrangement under `metadata.ui.desktop`. A missing
+  arrangement produces one Content canvas; a saved empty arrangement stays empty.
+- **Contexts** selects an existing named context. Its own `metadata.ui.desktop`
+  owns the arrangement. Use the POV address or the bound tree's path buttons to
+  navigate. The context URL changes on the server, so other context-bound apps
+  follow it. Existing stored filters remain server-enforced.
+
+Add Content, Emails, Messages, Notes, Files, Tabs or Browser canvases. Reorder
+with the arrow buttons; set title, column span, height, optional query or browser
+address in Settings. **Save arrangement** persists changes on the current owner.
+Explorer navigation prompts before discarding unsaved arrangement changes;
+context POV navigation retains those edits. **Reload saved** restores the owner.
+Use **Start workspace** if its tree cannot be loaded because it is stopped.
+
+Each arrangement has `{ version: 1, canvases: [...] }`. Canvas IDs are stable and
+runtime state is not persisted. Unsupported/malformed arrangements report an
+error instead of replacing stored metadata. Saving re-reads metadata and merges
+only `ui.desktop`, preserving sibling UI fields and toolbox metadata. The server
+currently has no metadata revision precondition, so simultaneous metadata saves
+can still race.
+
+Document canvases provide paginated lists and text details, optional additional
+queries, manual refresh and live Socket.IO refresh. Requests are cancelled when
+views leave their scope; connection subscriptions are replaced on remote/scope
+changes. Context document reads use the context endpoint so stored filters are
+composed by the server. Explorer reads use the workspace path endpoint so ancestor
+constraints apply.
+
+Browser canvases currently open isolated native browser **windows**, with HTTP(S)
+addresses only and no main-window capabilities or Canvas credentials. They are
+not yet embedded in the grid, and their sessions are not restored/closed by tree
+navigation. Full shared web editors, inline browser hosting and richer application
+views remain follow-up work; this shell does not yet provide web feature parity.
 
 ## Shared configuration
 
@@ -53,12 +91,14 @@ cleanup before starting again. PM2 OS-login startup is not configured here.
 
 ```sh
 npm run build:frontend
+npm test
+npm run test:ui # requires Google Chrome; fixtures only, screenshots in /tmp
 cd src-tauri
 cargo test --lib
 ```
 
-The screen is a functional setup harness; polished wizard navigation, packaging
-FUSE/PM2, OS startup integration and broader platform validation come later.
+Mount settings retain the existing setup harness. Packaging FUSE/PM2, OS startup
+integration and broader platform validation come later.
 
 ## Automatic builds
 
