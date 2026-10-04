@@ -59,6 +59,12 @@ Each export has one PM2 process and a separate FUSE state/cache:
 - `<root>/<remote>/<workspace>/Trees/<tree>`: one context or directory tree.
 - `<root>/<remote>/<workspace>/Contexts`: that workspace's context views.
 
+PM2 names follow `canvas-desktop-<remote>-<workspace>-Home`, `...-Contexts`,
+or `...-Trees-<tree>`. Name components are escaped to avoid collisions and
+unsafe log filenames. Start/Restart replaces legacy hashed services with the
+readable name; Stop and status also recognize legacy services. Mount and mirror
+share the same service identity.
+
 Mount only provides a live read/write filesystem. Mirror is Home-only: FUSE
 pins all files, retains an offline cache, uploads writes, and handles remote
 removals through its mirror trash. This is a FUSE-backed mirror, not a separate

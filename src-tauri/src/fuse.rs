@@ -65,7 +65,7 @@ fn check_fuse() -> Result<String, String> {
 fn pm2_list() -> Result<Vec<Value>, String> {
     serde_json::from_str(&run("pm2", &["jlist".into()])?).map_err(|e| e.to_string())
 }
-pub fn process_name(m: &Mount) -> String {
+fn legacy_process_name(m: &Mount) -> String {
     // Stable, bounded names keep PM2 log filenames below filesystem limits.
     let key = serde_json::to_vec(&(
         m.remote.as_str(),
@@ -75,6 +75,48 @@ pub fn process_name(m: &Mount) -> String {
     ))
     .unwrap();
     format!("canvas-desktop-{:x}", Sha256::digest(key))
+}
+fn name_part(value: &str) -> String {
+    // Escape delimiters and filename-unsafe bytes without collapsing distinct
+    // remote/workspace names onto the same PM2 service.
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'.' | b'_') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if out.len() > 60 {
+        // Extremely long components would exceed PM2 log filename limits.
+        // Truncate on an escape boundary and retain a short collision suffix.
+        let mut end = 40;
+        while out[..end].rfind('%').is_some_and(|i| end - i < 3) {
+            end -= 1;
+        }
+        out = format!("{}~{:x}", &out[..end], Sha256::digest(value.as_bytes()));
+        out.truncate(end + 1 + 12);
+    }
+    out
+}
+pub fn process_name(m: &Mount) -> String {
+    let export = match m.export.as_str() {
+        "home" => "Home".into(),
+        "contexts" => "Contexts".into(),
+        "tree" => format!(
+            "Trees-{}",
+            name_part(m.tree.as_deref().unwrap_or("unknown"))
+        ),
+        other => name_part(other),
+    };
+    format!(
+        "canvas-desktop-{}-{}-{export}",
+        name_part(&m.remote),
+        name_part(&m.workspace)
+    )
+}
+fn matches_process(process: &Value, mount: &Mount) -> bool {
+    process["name"] == process_name(mount) || process["name"] == legacy_process_name(mount)
 }
 pub fn mount_args(cfg: &DesktopConfig, m: &Mount) -> Result<Vec<String>, String> {
     let path = config::mount_path(cfg, m)?;
@@ -134,11 +176,10 @@ pub fn has_active_mounts() -> Result<bool, String> {
         serde_json::from_str(&run("canvas-fuse", &["status".into(), "--json".into()])?)
             .map_err(|e| e.to_string())?;
     for m in &cfg.mounts {
-        let name = process_name(m);
         let path = config::mount_path(&cfg, m)?;
         if processes
             .iter()
-            .any(|p| p["name"] == name && p["pm2_env"]["status"] == "online")
+            .any(|p| matches_process(p, m) && p["pm2_env"]["status"] == "online")
             || status
                 .iter()
                 .any(|p| p["mountpoint"].as_str() == path.to_str() && p["mounted"] == true)
@@ -160,16 +201,25 @@ fn action(index: usize, action: &str) -> Result<(), String> {
     if action != "stop" {
         check_fuse()?;
     }
-    let existing = pm2_list()?.into_iter().find(|p| p["name"] == name);
+    let existing: Vec<Value> = pm2_list()?
+        .into_iter()
+        .filter(|p| matches_process(p, m))
+        .collect();
     if action == "start"
-        && existing
-            .as_ref()
-            .is_some_and(|p| p["pm2_env"]["status"] == "online")
+        && existing.len() == 1
+        && existing[0]["name"] == name
+        && existing[0]["pm2_env"]["status"] == "online"
     {
         return Ok(());
     }
-    if existing.is_some() {
-        run("pm2", &["delete".into(), name.clone()])?;
+    // Recreate legacy services under their readable name, and remove both if
+    // an interrupted migration left duplicate records. No new parallel mount.
+    for process in &existing {
+        if let Some(id) = process["pm_id"].as_u64() {
+            run("pm2", &["delete".into(), id.to_string()])?;
+        } else if let Some(old_name) = process["name"].as_str() {
+            run("pm2", &["delete".into(), old_name.into()])?;
+        }
     }
     // Only clean up a known Canvas mount, never unmount arbitrary filesystems.
     // PM2 can leave a stale kernel mount behind after killing a FUSE process.
@@ -251,7 +301,7 @@ pub async fn mount_status() -> Result<Value, String> {
         let rows: Vec<Value> = cfg.mounts.iter().map(|m| {
             let name = process_name(m);
             let path = config::mount_path(&cfg, m)?;
-            let process = processes.iter().find(|p| p["name"] == name);
+            let process = processes.iter().find(|p| matches_process(p, m));
             let status = mounts.as_array().and_then(|items| items.iter().find(|s| s["mountpoint"].as_str() == path.to_str()));
             Ok(json!({"name":name,"path":path,"process":process.map(|p| &p["pm2_env"]["status"]), "fuse":status}))
         }).collect::<Result<_, String>>()?;
@@ -441,6 +491,35 @@ mod tests {
         m.mode = "mount".into();
         m.workspace = "../escape".into();
         assert!(mount_args(&cfg, &m).is_err());
+    }
+    #[test]
+    fn readable_names_distinguish_exports_and_escape_collisions() {
+        let (_, mut m) = plan("home", "mirror");
+        m.remote = "user@remote".into();
+        m.workspace = "universe".into();
+        assert_eq!(process_name(&m), "canvas-desktop-user@remote-universe-Home");
+        assert!(matches_process(
+            &json!({"name":legacy_process_name(&m)}),
+            &m
+        ));
+        m.mode = "mount".into();
+        assert_eq!(process_name(&m), "canvas-desktop-user@remote-universe-Home");
+        m.export = "contexts".into();
+        assert_eq!(
+            process_name(&m),
+            "canvas-desktop-user@remote-universe-Contexts"
+        );
+        m.export = "tree".into();
+        m.tree = Some("directory".into());
+        assert_eq!(
+            process_name(&m),
+            "canvas-desktop-user@remote-universe-Trees-directory"
+        );
+        assert_ne!(name_part("a-b"), name_part("a%2Db"));
+        assert_ne!(name_part("a/b"), name_part("a_b"));
+        let long = name_part(&"a".repeat(300));
+        assert!(long.len() <= 60);
+        assert_ne!(long, name_part(&format!("{}b", "a".repeat(299))));
     }
     #[test]
     fn process_names_distinguish_remotes() {
