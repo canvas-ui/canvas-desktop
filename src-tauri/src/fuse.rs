@@ -9,17 +9,32 @@ use tauri::{AppHandle, Emitter};
 pub const TRAY_ID: &str = "canvas-tray";
 
 fn binary(name: &str) -> Result<PathBuf, String> {
-    std::env::var_os("PATH")
+    Some(crate::runtime_path::path())
         .and_then(|p| {
             std::env::split_paths(&p)
                 .map(|dir| dir.join(name))
-                .find(|p| p.is_file())
+                .find(|p| {
+                    if !p.is_file() {
+                        return false;
+                    }
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        p.metadata()
+                            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        true
+                    }
+                })
         })
         .ok_or(format!("{name} not installed or not on PATH"))
 }
 fn run(name: &str, args: &[String]) -> Result<String, String> {
     let output = Command::new(binary(name)?)
         .args(args)
+        .env("PATH", crate::runtime_path::path())
         .output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -29,6 +44,23 @@ fn run(name: &str, args: &[String]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+fn supported_fuse(version: &str) -> bool {
+    let Some(raw) = version.split_whitespace().last() else {
+        return false;
+    };
+    let parts = raw
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>();
+    matches!(parts, Ok(v) if v.len() == 3 && (v[0], v[1], v[2]) >= (0, 9, 1))
+}
+fn check_fuse() -> Result<String, String> {
+    let version = run("canvas-fuse", &["--version".into()])?.trim().to_owned();
+    if !supported_fuse(&version) {
+        return Err(format!("{version} is incompatible; install canvas-fuse 0.9.1 or newer (shared remote home and empty environment fixes required)"));
+    }
+    Ok(version)
 }
 fn pm2_list() -> Result<Vec<Value>, String> {
     serde_json::from_str(&run("pm2", &["jlist".into()])?).map_err(|e| e.to_string())
@@ -72,6 +104,26 @@ pub fn mount_args(cfg: &DesktopConfig, m: &Mount) -> Result<Vec<String>, String>
     }
     Ok(args)
 }
+// Clear inherited overrides inside the actual PM2 child, including overrides
+// retained by an already-running daemon. No credential is written to disk.
+fn fuse_launch(binary: PathBuf, args: Vec<String>) -> (PathBuf, Vec<String>) {
+    #[cfg(unix)]
+    {
+        let mut launch = vec![
+            "-u".into(),
+            "CANVAS_SERVER".into(),
+            "-u".into(),
+            "CANVAS_API_TOKEN".into(),
+            binary.to_string_lossy().into_owned(),
+        ];
+        launch.extend(args);
+        (PathBuf::from("/usr/bin/env"), launch)
+    }
+    #[cfg(not(unix))]
+    {
+        (binary, args)
+    }
+}
 pub fn has_active_mounts() -> Result<bool, String> {
     let cfg = config::load()?;
     if cfg.mounts.is_empty() {
@@ -105,6 +157,9 @@ fn action(index: usize, action: &str) -> Result<(), String> {
     if !matches!(action, "start" | "stop" | "restart") {
         return Err("Unknown action".into());
     }
+    if action != "stop" {
+        check_fuse()?;
+    }
     let existing = pm2_list()?.into_iter().find(|p| p["name"] == name);
     if action == "start"
         && existing
@@ -134,7 +189,24 @@ fn action(index: usize, action: &str) -> Result<(), String> {
         return Ok(());
     }
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-    let args = mount_args(&cfg, m)?;
+    let mut args = mount_args(&cfg, m)?;
+    let remotes = config::read(&config::user_home()?.join("config/remotes.json"))?;
+    let server = remotes
+        .get(&m.remote)
+        .and_then(|r| r.get("url"))
+        .and_then(Value::as_str)
+        .ok_or("Selected remote has no server URL")?;
+    let url = tauri::Url::parse(server)
+        .map_err(|_| "Selected remote must have an absolute HTTP(S) server URL")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Selected remote must have an absolute HTTP(S) server URL".into());
+    }
+    args.extend(["--server".into(), server.into()]);
+    let (script, args) = fuse_launch(binary("canvas-fuse")?, args);
     let file = config::user_home()?
         .join("var/desktop-pm2")
         .join(&m.remote)
@@ -144,10 +216,10 @@ fn action(index: usize, action: &str) -> Result<(), String> {
     config::write(
         &file,
         &json!({ "apps": [{
-            "name":name, "script":binary("canvas-fuse")?, "args":args,
+            "name":name, "script":script, "args":args,
             "interpreter":"none", "exec_mode":"fork", "instances":1,
             "autorestart":false, "kill_timeout":10000,
-            "env": { "CANVAS_USER_HOME": config::user_home()?, "CANVAS_SERVER":"", "CANVAS_API_TOKEN":"" }
+            "env": { "CANVAS_USER_HOME": config::user_home()?, "PATH": crate::runtime_path::path() }
         }]}),
     )?;
     run(
@@ -170,9 +242,12 @@ pub async fn mount_status() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let cfg = config::load()?;
         let fuse = binary("canvas-fuse").ok();
+        let fuse_check = fuse.as_ref().map(|_| check_fuse());
+        let fuse_ready = matches!(&fuse_check, Some(Ok(_)));
+        let fuse_error = fuse_check.as_ref().and_then(|r| r.as_ref().err());
         let pm2 = binary("pm2").ok();
         let processes = if pm2.is_some() { pm2_list()? } else { vec![] };
-        let mounts: Value = if fuse.is_some() { serde_json::from_str(&run("canvas-fuse", &["status".into(), "--json".into()])?).map_err(|e| e.to_string())? } else { json!([]) };
+        let mounts: Value = if fuse_ready { serde_json::from_str(&run("canvas-fuse", &["status".into(), "--json".into()])?).map_err(|e| e.to_string())? } else { json!([]) };
         let rows: Vec<Value> = cfg.mounts.iter().map(|m| {
             let name = process_name(m);
             let path = config::mount_path(&cfg, m)?;
@@ -180,7 +255,7 @@ pub async fn mount_status() -> Result<Value, String> {
             let status = mounts.as_array().and_then(|items| items.iter().find(|s| s["mountpoint"].as_str() == path.to_str()));
             Ok(json!({"name":name,"path":path,"process":process.map(|p| &p["pm2_env"]["status"]), "fuse":status}))
         }).collect::<Result<_, String>>()?;
-        Ok(json!({"fuseAvailable":fuse.is_some(), "pm2Available":pm2.is_some(), "mounts":rows}))
+        Ok(json!({"fuseAvailable":fuse_ready, "fuseError":fuse_error, "pm2Available":pm2.is_some(), "mounts":rows}))
     }).await.map_err(|e| e.to_string())?
 }
 pub fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
@@ -272,6 +347,70 @@ mod tests {
                 mode: mode.into(),
             },
         )
+    }
+    #[test]
+    fn rejects_old_fuse_before_mount_launch() {
+        assert!(!supported_fuse("canvas-fuse 0.9.0"));
+        assert!(!supported_fuse("unknown"));
+        assert!(supported_fuse("canvas-fuse 0.9.1"));
+        assert!(supported_fuse("canvas-fuse 0.9.2"));
+        assert!(supported_fuse("canvas-fuse 1.0.0"));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn fuse_child_drops_pm2_overrides() {
+        let (script, args) = fuse_launch(
+            PathBuf::from("/bin/sh"),
+            vec![
+                "-c".into(),
+                "test -z \"${CANVAS_SERVER+x}\" && test -z \"${CANVAS_API_TOKEN+x}\"".into(),
+            ],
+        );
+        assert!(Command::new(script)
+            .args(args)
+            .env("CANVAS_SERVER", "")
+            .env("CANVAS_API_TOKEN", "stale-daemon-token")
+            .status()
+            .unwrap()
+            .success());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn gui_launch_finds_shell_pm2_and_its_node_interpreter() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var_os("CANVAS_PATH_TEST_CHILD").is_some() {
+            assert_eq!(run("pm2", &[]).unwrap().trim(), "mock-node-ok");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("canvas-pm2-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            ("shell", "#!/bin/sh\nprintf '\\0CANVAS_PATH\\0%s:/usr/bin:/bin\\0' \"$CANVAS_PATH_TEST_CHILD\"\n"),
+            ("pm2", "#!/usr/bin/env node\n"),
+            ("node", "#!/bin/sh\necho mock-node-ok\n"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "fuse::tests::gui_launch_finds_shell_pm2_and_its_node_interpreter",
+                "--nocapture",
+            ])
+            .env("PATH", "/usr/bin:/bin")
+            .env("SHELL", dir.join("shell"))
+            .env("CANVAS_PATH_TEST_CHILD", &dir)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     #[test]
     fn home_is_direct_and_mirror_pins_everything() {

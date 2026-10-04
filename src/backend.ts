@@ -6,7 +6,7 @@ export type Config = { version: number; workspaceRoot: string; mounts: Mount[] }
 export type Setup = { config: Config; remotes: Record<string, Remote> };
 export type Workspace = { name: string; label?: string };
 export type Tree = { name: string; type: string; label?: string };
-export type Status = { fuseAvailable: boolean; pm2Available: boolean; mounts: { path: string; process: string | null; fuse: { mounted: boolean; status?: string } | null }[] };
+export type Status = { fuseAvailable: boolean; fuseError?: string; pm2Available: boolean; mounts: { path: string; process: string | null; fuse: { mounted: boolean; status?: string } | null }[] };
 export const load = () => invoke<Setup>('load_setup');
 export const save = (config: Config) => invoke('save_setup', { config });
 export const status = () => invoke<Status>('mount_status');

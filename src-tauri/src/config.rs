@@ -108,6 +108,16 @@ pub fn mount_path(cfg: &DesktopConfig, mount: &Mount) -> Result<PathBuf, String>
         _ => Err("Invalid export".into()),
     }
 }
+// Login only needs remotes. A malformed mount plan must not block the web UI.
+#[tauri::command]
+pub async fn load_remotes() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let _guard = CONFIG_LOCK.lock().map_err(|e| e.to_string())?;
+        read(&user_home()?.join("config/remotes.json"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 #[tauri::command]
 pub async fn load_setup() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(load_setup_impl)

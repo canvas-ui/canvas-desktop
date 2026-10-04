@@ -31,15 +31,30 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: canvas-desktop
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.build-ref }}
+          path: canvas-desktop
+      - name: Checkout shared web UI (v2.14.15)
+        uses: actions/checkout@v4
+        with:
+          repository: canvas-ui/canvas-web
+          ref: f8e8ad63da51dc8183cd080a7aac187496594679
+          path: canvas-web
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: canvas-desktop/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: |
+            canvas-desktop/pnpm-lock.yaml
+            canvas-web/pnpm-lock.yaml
       - name: Verify desktop versions
         env:
           RELEASE_TAG: ${{ inputs.release-tag }}
@@ -56,8 +71,9 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: canvas-desktop/src-tauri -> target
           key: desktop-${{ matrix.target }}
+      - run: pnpm --dir ../canvas-web install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
       - name: Native scaffold tests (runner architecture)
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
@@ -65,7 +81,7 @@ jobs:
         if: inputs.release-tag == ''
         uses: tauri-apps/tauri-action@v0
         with:
-          projectPath: .
+          projectPath: canvas-desktop
           args: --target ${{ matrix.target }} -- --locked
       - name: Build and attach release installers
         if: inputs.release-tag != ''
@@ -73,7 +89,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: .
+          projectPath: canvas-desktop
           args: --target ${{ matrix.target }} -- --locked
           tagName: ${{ inputs.release-tag }}
           releaseName: Canvas Desktop ${{ inputs.release-tag }}
@@ -84,11 +100,11 @@ jobs:
         with:
           name: canvas-desktop-${{ matrix.target }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            canvas-desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
           if-no-files-found: error
           retention-days: 14

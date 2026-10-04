@@ -1,6 +1,7 @@
 mod browser;
 mod config;
 mod fuse;
+mod runtime_path;
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             config::load_setup,
+            config::load_remotes,
             config::save_remote,
             config::save_setup,
             fuse::mount_action,

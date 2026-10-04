@@ -9,15 +9,32 @@ jobs:
   # Fast gate (the required check): versions agree, frontend type-checks and builds.
   build-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: canvas-desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: canvas-desktop
+      - name: Checkout shared web UI (v2.14.15)
+        uses: actions/checkout@v4
+        with:
+          repository: canvas-ui/canvas-web
+          ref: f8e8ad63da51dc8183cd080a7aac187496594679
+          path: canvas-web
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: canvas-desktop/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: |
+            canvas-desktop/pnpm-lock.yaml
+            canvas-web/pnpm-lock.yaml
       - run: node scripts/verify-desktop-version.mjs
-      - run: node --test tests/*.test.mjs
+      - run: node --experimental-strip-types --test tests/*.test.mjs
+      - run: pnpm --dir ../canvas-web install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:frontend
 

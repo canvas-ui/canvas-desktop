@@ -91,6 +91,7 @@ export default function Setup() {
         <button onClick={() => { void task(async () => { await backend.save(setup.config); setDirty(false); await refreshStatus(); setMessage('Mount plan saved.'); }); }}>Save mount plan</button>
       </fieldset>
       <h2>Mounts</h2><p>canvas-fuse: {status?.fuseAvailable ? 'available' : 'missing'} · PM2: {status?.pm2Available ? 'available' : 'missing'}</p>
+      {status?.fuseError && <p role="alert" className="error">{status.fuseError}</p>}
       {dirty && <p>Save the plan before managing mounts.</p>}
       {setup.config.mounts.map((mount, i) => <section key={`${mount.remote}:${mount.workspace}:${mount.export}:${mount.tree}`}>
         <strong>{mount.remote} / {mount.workspace} / {mount.tree || mount.export} ({mount.mode})</strong>

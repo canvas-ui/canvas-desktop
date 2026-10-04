@@ -1,64 +1,48 @@
 # Canvas Desktop
 
-Context-driven desktop with saved multi-canvas arrangements and a tray mount
-manager. Browsing requires a running Canvas server. Mount management additionally
-requires `canvas-fuse` 0.9.1+, `pm2` on PATH, and Linux FUSE support. PM2 and FUSE
-are external prerequisites; the desktop bundle does not install them.
+Canvas Desktop hosts the existing `canvas-web` application in Tauri. The same
+React routes, screens, editors, settings, themes and services are bundled into
+both applications. Desktop does not maintain a second application UI.
 
 ## Run
 
+Keep `canvas-web` and `canvas-desktop` as sibling checkouts:
+
 ```sh
+pnpm --dir ../canvas-web install --frozen-lockfile
 pnpm install
 pnpm run tauri dev
 ```
 
-Open **Mounts & connections** to sign in with email/password or an API token, naming the remote `user@remote-name`
-to match the CLI. Existing CLI remotes appear in the
-remote selector. Add multiple named remotes, select exports for each workspace,
-choose one absolute workspaces root, and save the plan. Start/stop/restart exports
-in the window or tray. Closing the window hides it; quitting the tray leaves
-mount processes running. The tray is available again on the next desktop launch.
+Choose a saved CLI remote or enter the Canvas server address, then use the
+standard Canvas login screen. **Server** in the bottom-right changes connections.
+A server change reloads the app to dispose sockets and singleton API clients.
+Credentials and UI preferences in the webview are scoped to the selected server;
+logging out does not import the shared remote token again on the next launch.
+For saved remotes, successful web login updates their token in the native store.
 
-## Desktop navigation
+The main UI does not invoke PM2, mount status or mount startup during login.
+Existing native tray mount management remains available for saved plans. The
+old setup/multi-canvas prototype is not mounted. Desktop-specific application
+views and mount onboarding will follow the shared UI baseline.
 
-- **Explorer** selects a workspace, a context/directory tree, and a path. The
-  selected layer owns its arrangement under `metadata.ui.desktop`. A missing
-  arrangement produces one Content canvas; a saved empty arrangement stays empty.
-- **Contexts** selects an existing named context. Its own `metadata.ui.desktop`
-  owns the arrangement. Use the POV address or the bound tree's path buttons to
-  navigate. The context URL changes on the server, so other context-bound apps
-  follow it. Existing stored filters remain server-enforced.
+## Shared frontend build
 
-Add Content, Emails, Messages, Notes, Files, Tabs or Browser canvases. Reorder
-with the arrow buttons; set title, column span, height, optional query or browser
-address in Settings. **Save arrangement** persists changes on the current owner.
-Explorer navigation prompts before discarding unsaved arrangement changes;
-context POV navigation retains those edits. **Reload saved** restores the owner.
-Use **Start workspace** if its tree cannot be loaded because it is stopped.
+The Vite build imports `../canvas-web/src` directly and uses its public assets.
+CI checks out the pinned web v2.14.15 commit beside desktop. The desktop package
+carries the web frontend dependencies alongside Tauri. A
+standalone desktop checkout needs its sibling web checkout for builds; installed
+packages embed everything and do not need those source directories.
 
-Each arrangement has `{ version: 1, canvases: [...] }`. Canvas IDs are stable and
-runtime state is not persisted. Unsupported/malformed arrangements report an
-error instead of replacing stored metadata. Saving re-reads metadata and merges
-only `ui.desktop`, preserving sibling UI fields and toolbox metadata. The server
-currently has no metadata revision precondition, so simultaneous metadata saves
-can still race.
-
-Document canvases provide paginated lists and text details, optional additional
-queries, manual refresh and live Socket.IO refresh. Requests are cancelled when
-views leave their scope; connection subscriptions are replaced on remote/scope
-changes. Context document reads use the context endpoint so stored filters are
-composed by the server. Explorer reads use the workspace path endpoint so ancestor
-constraints apply.
-
-Browser canvases currently open isolated native browser **windows**, with HTTP(S)
-addresses only and no main-window capabilities or Canvas credentials. They are
-not yet embedded in the grid, and their sessions are not restored/closed by tree
-navigation. Full shared web editors, inline browser hosting and richer application
-views remain follow-up work; this shell does not yet provide web feature parity.
+The host supplies the selected API URL before importing the web application.
+A desktop-only Vite adapter supplies the API URL and selected-server origin to
+share links and agent WebSocket fallbacks. The web source is unmodified. Service-worker registration is
+disabled in desktop, where native packages own frontend updates. Excalidraw fonts,
+PDF workers and wallpapers ship with the bundle.
 
 ## Shared configuration
 
-Credentials live exclusively in `~/.canvas/config/remotes.json`, using the CLI's
+Named remote credentials live in `~/.canvas/config/remotes.json`, using the CLI's
 `url`, `auth.token`, and optional `device.token` shape. Existing remote metadata
 is preserved. Selecting a remote in desktop does not change the CLI's bound
 remote. `CANVAS_USER_HOME` overrides the configuration home for all integrations;
@@ -81,7 +65,16 @@ removals through its mirror trash. This is a FUSE-backed mirror, not a separate
 watcher syncing an ordinary folder. Trees and Contexts remain live mounts.
 Git exports are deferred.
 
-PM2 runs foreground FUSE processes, without `--detach`. It stores generated
+Desktop recovers the user's interactive login-shell PATH for PM2, Node and
+canvas-fuse discovery, including when launched from the desktop menu. Discovery
+falls back to the inherited PATH if shell startup fails or exceeds three seconds.
+The same PATH is supplied to subprocesses and PM2's FUSE child.
+
+PM2 runs foreground FUSE processes, without `--detach`. On Unix the child runs
+through `/usr/bin/env -u CANVAS_SERVER -u CANVAS_API_TOKEN`, preventing stale or
+empty daemon environment overrides from replacing the selected remote. Desktop
+also supplies the remote's validated HTTP(S) URL explicitly; tokens still come
+from the shared remote store. It stores generated
 process definitions under `~/.canvas/var/desktop-pm2/`. Tokens are never written
 to those definitions or passed in process arguments. Automatic crash restart
 is disabled to avoid remount loops over a stale kernel mount; Restart performs
@@ -97,8 +90,8 @@ cd src-tauri
 cargo test --lib
 ```
 
-Mount settings retain the existing setup harness. Packaging FUSE/PM2, OS startup
-integration and broader platform validation come later.
+Packaging FUSE/PM2, OS startup integration and broader native platform validation
+remain desktop follow-up work.
 
 ## Automatic builds
 

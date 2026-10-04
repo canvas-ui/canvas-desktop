@@ -2,10 +2,53 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/images/favicon.png">
+    <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
+    <!-- manifest link injected by vite-plugin-pwa (generated manifest.webmanifest, incl. share_target) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Canvas Desktop</title>
-  </head>
+    <!--
+      Theme boot. Must stay inline and stay here — a blocking script in <head>
+      is the only thing that runs before first paint. Deferred to the React
+      provider, a dark-theme user would get a full white frame on every load.
 
+      Kept dependency-free and duplicated from src/theme/ on purpose: importing
+      a module here would make it async, which defeats the entire point. It
+      only mirrors the storage key and the attribute names; everything else
+      lives in the theme module. Failing open to the defaults is fine — the
+      provider corrects the attributes on mount.
+    -->
+    <script>
+      (function () {
+        try {
+          var connection = JSON.parse(localStorage.getItem('canvas.desktop.connection') || 'null')
+          var themeKey = connection ? 'canvas.desktop.session:' + encodeURIComponent(connection.url) + ':canvas.ui.theme' : 'canvas.ui.theme'
+          var stored = localStorage.getItem(themeKey)
+          var prefs = stored ? JSON.parse(stored) : {}
+          var themes = ['canvas', 'nord', 'contrast', 'terminal', 'frost', 'halflife']
+          var theme = themes.indexOf(prefs.theme) !== -1 ? prefs.theme : 'canvas'
+          // Default is light (see DEFAULT_PREFERENCES); the OS preference is
+          // only consulted when the user explicitly picked 'system'.
+          var scheme = prefs.scheme
+          if (scheme === 'system') {
+            scheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          } else if (scheme !== 'light' && scheme !== 'dark') {
+            scheme = 'light'
+          }
+          var densities = ['auto', 'compact', 'comfortable', 'touch']
+          var density = densities.indexOf(prefs.density) !== -1 ? prefs.density : 'auto'
+          var root = document.documentElement
+          root.dataset.theme = theme
+          root.dataset.scheme = scheme
+          root.dataset.density = density
+        } catch (e) {
+          document.documentElement.dataset.theme = 'canvas'
+          document.documentElement.dataset.scheme = 'light'
+          document.documentElement.dataset.density = 'auto'
+        }
+      })()
+    </script>
+  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
