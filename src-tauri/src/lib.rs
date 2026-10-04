@@ -3,6 +3,28 @@ mod config;
 mod fuse;
 mod runtime_path;
 use tauri::Manager;
+
+pub(crate) fn open_main_ui(app: &tauri::AppHandle, restart: bool) -> tauri::Result<()> {
+    let window = if let Some(window) = app.get_webview_window("main") {
+        if restart {
+            window.reload()?;
+        }
+        window
+    } else {
+        let config = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|config| config.label == "main")
+            .expect("main window configuration is required");
+        tauri::WebviewWindowBuilder::from_config(app, config)?.build()?
+    };
+    window.unminimize()?;
+    window.show()?;
+    window.set_focus()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Configure WebKit before GTK initialization or any webview is created.
@@ -33,12 +55,11 @@ pub fn run() {
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/tray.png"
                 ))?)
-                .tooltip("Canvas mounts")
+                .tooltip("Canvas Desktop")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                    "show" | "restart-ui" => {
+                        if let Err(error) = open_main_ui(app, event.id.as_ref() == "restart-ui") {
+                            eprintln!("Unable to open Canvas UI: {error}");
                         }
                     }
                     "quit" => app.exit(0),

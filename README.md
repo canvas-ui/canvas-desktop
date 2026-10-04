@@ -26,6 +26,10 @@ Existing native tray mount management remains available for saved plans. The
 old setup/multi-canvas prototype is not mounted. Desktop-specific application
 views and mount onboarding will follow the shared UI baseline.
 
+Closing the main window hides it and leaves the tray running. **Open Canvas**
+restores and focuses it, or recreates it if missing. **Restart Canvas UI** reloads
+the frontend and opens the window without restarting mounts or PM2 services.
+
 ## Shared frontend build
 
 The Vite build imports `../canvas-web/src` directly and uses its public assets.

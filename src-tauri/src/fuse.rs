@@ -313,7 +313,14 @@ pub fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
     menu.append(&MenuItem::with_id(
         app,
         "show",
-        "Setup / Manage mounts",
+        "Open Canvas",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "restart-ui",
+        "Restart Canvas UI",
         true,
         None::<&str>,
     )?)?;
@@ -370,11 +377,7 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
     std::thread::spawn(move || {
         if let Err(error) = action(index, &operation) {
             let _ = app.emit("mounts:error", &error);
-            use tauri::Manager;
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            let _ = crate::open_main_ui(&app, false);
         }
         let _ = app.emit("mounts:changed", ());
     });
