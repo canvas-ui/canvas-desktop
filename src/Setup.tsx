@@ -1,6 +1,7 @@
 import { version } from "../package.json";
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { TlsFields } from './TlsFields';
 import * as backend from './backend';
 
 export default function Setup() {
@@ -13,6 +14,8 @@ export default function Setup() {
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [message, setMessage] = useState('');
+  const [tls, setTls] = useState<backend.ClientTls>();
+  const [allowImport, setAllowImport] = useState(false);
   const [credentials, setCredentials] = useState({ id: '', url: '', email: '', password: '', token: '' });
   async function task(fn: () => Promise<void>) {
     setBusy(true); setError(''); setMessage('');
@@ -69,14 +72,14 @@ export default function Setup() {
     {error && <p role="alert" className="error">{error}</p>}{message && <p role="status">{message}</p>}
     <fieldset disabled={busy}><legend>Add or sign in to a remote</legend>
       <form onSubmit={e => { e.preventDefault(); void task(async () => {
-        await backend.login(credentials.id, credentials.url, credentials.email, credentials.password, credentials.token);
+        await backend.login(credentials.id, credentials.url, credentials.email, credentials.password, credentials.token, tls, allowImport);
         const loaded = await backend.load();
         setSetup(prev => ({ ...loaded, config: prev?.config || loaded.config })); setRemote(credentials.id);
         setCredentials({ id: '', url: '', email: '', password: '', token: '' }); setMessage('Remote saved.');
       }); }}>
         {(['id', 'url', 'email', 'password', 'token'] as const).map(key => <label key={key}>{({ id: 'Remote name (user@remote-name)', url: 'Server URL', email: 'Email', password: 'Password', token: 'API token (alternative to email/password)' })[key]}
           <input required={key === 'id' || key === 'url'} type={key === 'password' || key === 'token' ? 'password' : key === 'url' ? 'url' : key === 'email' ? 'email' : 'text'} value={credentials[key]} onChange={e => setCredentials({ ...credentials, [key]: e.target.value })} />
-        </label>)}<button>Sign in and save remote</button>
+        </label>)}<TlsFields tls={tls} onChange={setTls} allowImport={allowImport} onImportChange={setAllowImport} /><button>Sign in and save remote</button>
       </form>
     </fieldset>
     {setup && <>

@@ -2,6 +2,7 @@ mod browser;
 mod config;
 mod fuse;
 mod runtime_path;
+mod tls;
 use tauri::Manager;
 
 pub(crate) fn open_main_ui(app: &tauri::AppHandle, restart: bool) -> tauri::Result<()> {
@@ -31,8 +32,16 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     configure_linux_renderer();
     tauri::Builder::default()
+        .manage(tls::TlsState::default())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            tls::activate_tls,
+            tls::prepare_tls_import,
+            tls::save_remote_tls,
+            tls::native_tls_status,
+            tls::remove_native_identity,
+            tls::restart_connections,
             config::load_setup,
             config::load_remotes,
             config::save_remote,
@@ -94,4 +103,9 @@ fn configure_linux_renderer() {
     {
         std::env::set_var("GDK_BACKEND", "x11");
     }
+}
+
+#[cfg(feature = "tls-smoke-test")]
+pub fn run_tls_smoke() {
+    tls::smoke::run();
 }

@@ -151,3 +151,36 @@ frontend embedded when that executable was built, and the CLI desktop launcher
 uses its downloaded release. Quit the existing tray instance before launching
 a rebuilt executable or installing the new package. Check the version footer
 and the “Add or sign in to a remote” form to identify the new scaffold.
+
+### Client certificate remotes
+
+The server picker and mount setup accept PEM certificate/key paths or native file
+selection. Configure the identity before the Canvas login screen. The certificate
+chain is leaf-first and the RSA/EC private key must be unencrypted and protected
+with user-only filesystem access. Paths are shared with CLI/FUSE via remotes.json;
+key contents never enter JavaScript or remote configuration.
+
+Desktop uses native WebKitGTK/WKWebView/WebView2 authentication handlers for the
+embedded web app and protected browser windows. Certificate selection is limited
+to configured HTTPS host/port pairs; unrelated certificate requests are cancelled.
+Canvas password/token authentication and normal server verification remain enabled.
+
+Windows requires explicit consent to import a missing identity into CurrentUser/My.
+Existing matching identities with private keys are reused. The server picker shows
+tracked imports and provides removal controls. First clear the identity from all
+saved remotes and reconnect Desktop; only app-owned, unreferenced imports and keys
+can be removed. Imported identities can also be used by other Windows applications.
+macOS uses an application-owned session keychain, removed on orderly process exit.
+Linux uses PEM credentials directly.
+
+After renewing files or changing identity settings, use **Save and reconnect** in
+the server picker. This restarts Desktop to clear native TLS sessions; restart
+mounts/daemon mirrors separately. Certificate mounts require canvas-fuse 0.10.0+.
+
+For native validation, build `cargo build --manifest-path src-tauri/Cargo.toml
+--features tls-smoke-test --example tls-smoke`, then run
+`node scripts/check-tls-native.mjs` from canvas-desktop. It requires sibling
+canvas-common, nginx/OpenSSL, and Linux Xvfb/dbus-run-session. The test-only build
+pins its private fixture server certificate/CA; production builds have no test
+trust override. Windows tests require an ephemeral CI account and clean up their
+fixture CA/imports. Platform runtime validation must pass before claiming support.

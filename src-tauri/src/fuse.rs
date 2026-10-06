@@ -156,6 +156,10 @@ fn fuse_launch(binary: PathBuf, args: Vec<String>) -> (PathBuf, Vec<String>) {
             "CANVAS_SERVER".into(),
             "-u".into(),
             "CANVAS_API_TOKEN".into(),
+            "-u".into(),
+            "CANVAS_TLS_CERT".into(),
+            "-u".into(),
+            "CANVAS_TLS_KEY".into(),
             binary.to_string_lossy().into_owned(),
         ];
         launch.extend(args);
@@ -241,6 +245,23 @@ fn action(index: usize, action: &str) -> Result<(), String> {
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     let mut args = mount_args(&cfg, m)?;
     let remotes = config::read(&config::user_home()?.join("config/remotes.json"))?;
+    if remotes
+        .get(&m.remote)
+        .and_then(|r| r.get("tls"))
+        .is_some_and(|v| !v.is_null())
+    {
+        let version = check_fuse()?;
+        let parts = version
+            .split_whitespace()
+            .last()
+            .unwrap_or("")
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>();
+        if !matches!(parts, Ok(v) if v.len() == 3 && (v[0],v[1],v[2]) >= (0,10,0)) {
+            return Err("Client certificate mounts require canvas-fuse 0.10.0 or newer".into());
+        }
+    }
     let server = remotes
         .get(&m.remote)
         .and_then(|r| r.get("url"))

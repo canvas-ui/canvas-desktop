@@ -16,12 +16,18 @@ fn browser_url(value: &str) -> Result<tauri::Url, String> {
 pub fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let url = browser_url(&url)?;
     let label = format!("browser-{}", NEXT_BROWSER.fetch_add(1, Ordering::Relaxed));
-    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url))
-        .title("Canvas Browser")
-        .inner_size(1100.0, 800.0)
-        .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let window = WebviewWindowBuilder::new(
+        &app,
+        label,
+        WebviewUrl::External("about:blank".parse().unwrap()),
+    )
+    .title("Canvas Browser")
+    .inner_size(1100.0, 800.0)
+    .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
+    .build()
+    .map_err(|e| e.to_string())?;
+    crate::tls::install(&window)?;
+    window.navigate(url).map_err(|e| e.to_string())?;
     Ok(())
 }
 #[cfg(test)]

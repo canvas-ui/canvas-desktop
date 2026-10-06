@@ -1,0 +1,64 @@
+name: native-client-tls
+on:
+  workflow_dispatch:
+    inputs:
+      common-ref:
+        description: canvas-common ref containing the TLS transport and fixture
+        default: main
+        required: true
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'scripts/check-tls-native.mjs'
+      - '.github/workflows/tls.yml'
+permissions:
+  contents: read
+jobs:
+  native-tls:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: canvas-desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: canvas-desktop
+      - uses: actions/checkout@v4
+        with:
+          repository: canvas-ui/canvas-common
+          ref: ${{ inputs.common-ref || 'main' }}
+          path: canvas-common
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: canvas-common/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: canvas-desktop/src-tauri
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb dbus-x11 nginx openssl
+      - name: macOS fixture dependencies
+        if: runner.os == 'macOS'
+        run: brew install nginx openssl@3
+      - name: Windows fixture dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nginx --no-progress -y
+          $nginx = Get-ChildItem C:\tools -Recurse -Filter nginx.exe | Select-Object -First 1
+          if (-not $nginx) { throw 'nginx executable not found' }
+          $nginx.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Install fixture dependencies
+        run: pnpm --dir ../canvas-common install --frozen-lockfile --ignore-scripts
+      - name: Build isolated native test
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --features tls-smoke-test --example tls-smoke
+      - name: Verify native authentication
+        run: node scripts/check-tls-native.mjs

@@ -1,6 +1,6 @@
 [package]
 name = "canvas-desktop"
-version = "0.3.2"
+version = "0.4.0"
 description = "Canvas Desktop workspace mount manager"
 authors = ["Jozef Melich <me@idnc.sk>"]
 license = "AGPL-3.0-or-later"
@@ -17,18 +17,39 @@ name = "desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "~2.11.2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+openssl = { version = "0.10", features = ["vendored"] }
 dirs = "5"
+anyhow = "1"
+tauri-plugin-dialog = "2"
 
 
 # time 0.3.48 breaks cookie + tauri-utils on rustc 1.96+ (time-rs/time#783)
 [dependencies.time]
 version = "=0.3.47"
 
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+gio = "0.18"
+glib = "0.18"
+webkit2gtk-sys = "2.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_Security_Cryptography"] }
+
+[features]
+tls-smoke-test = []
+
+[[example]]
+name = "tls-smoke"
+required-features = ["tls-smoke-test"]
