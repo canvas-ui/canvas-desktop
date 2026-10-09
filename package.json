@@ -1,7 +1,7 @@
 {
   "name": "canvas-desktop",
   "private": true,
-  "version": "0.4.9",
+  "version": "0.4.10",
   "license": "AGPL-3.0-or-later",
   "author": "Jozef Melich <me@idnc.sk>",
   "type": "module",
