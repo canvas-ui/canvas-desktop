@@ -1,6 +1,6 @@
 [package]
 name = "canvas-desktop"
-version = "0.4.17"
+version = "0.4.18"
 description = "Canvas Desktop workspace mount manager"
 authors = ["Jozef Melich <me@idnc.sk>"]
 license = "AGPL-3.0-or-later"
