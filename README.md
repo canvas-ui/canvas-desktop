@@ -120,6 +120,16 @@ produces Debian/RPM/AppImage packages, macOS DMGs, and Windows MSI/NSIS installe
 Builds remain unsigned; FUSE and PM2 are still external prerequisites, and
 building a platform installer does not establish filesystem-mount support there.
 
+Stable links always download the latest published release:
+
+- Linux x64: [Debian](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-linux-x86_64.deb), [RPM](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-linux-x86_64.rpm), [AppImage](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-linux-x86_64.AppImage).
+- macOS: [Apple Silicon](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-macos-aarch64.dmg), [Intel](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-macos-x86_64.dmg).
+- Windows x64: [Installer](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-windows-x86_64-setup.exe), [MSI](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/canvas-desktop-windows-x86_64-en-US.msi).
+- [SHA256SUMS](https://github.com/canvas-ui/canvas-desktop/releases/latest/download/SHA256SUMS).
+
+Publication verifies and uploads these aliases before marking the release Latest.
+Original versioned filenames remain available for pinned downloads.
+
 ## Linux / NVIDIA blank window
 
 Before GTK/WebKit starts, desktop defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1`

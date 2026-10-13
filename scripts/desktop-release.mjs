@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { publishStableAssets } from './release-assets.mjs';
 
 const installerGroups = [
     /(?:amd64|x64|x86_64)\.deb$/i,
@@ -29,9 +30,11 @@ export function prepareRelease({ release, tag, sha }, gh) {
     }
     return { tag, ref };
 }
-export function finalizeRelease(release, tag, gh) {
+export function finalizeRelease(release, tag, gh, publishAssets) {
     if (!complete(release)) throw new Error(`${tag} is missing installers; keeping it in draft`);
-    gh(['release', 'edit', tag, '--draft=false']);
+    if (release.prerelease) throw new Error(`${tag} is a prerelease; refusing to mark it latest`);
+    publishAssets();
+    gh(['release', 'edit', tag, '--draft=false', '--latest']);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -49,6 +52,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         else console.log(`${tag} is complete — nothing to do`);
     } else if (process.argv[2] === 'finalize') {
         if (!release) throw new Error(`${tag} release not found`);
-        finalizeRelease(release, tag, gh);
+        finalizeRelease(release, tag, gh, () => publishStableAssets(release, tag, repository, gh));
     } else throw new Error('Usage: desktop-release.mjs prepare|finalize');
 }

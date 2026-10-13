@@ -10,8 +10,15 @@ test('new releases stay draft until all installers succeed', () => {
     assert.ok(calls[0].includes('--draft'));
     assert.throws(() => finalizeRelease({ assets: assets.slice(1) }, 'v1.0.0', args => calls.push(args)), /missing installers/);
     assert.equal(calls.length, 1);
-    finalizeRelease({ assets }, 'v1.0.0', args => calls.push(args));
-    assert.ok(calls[1].includes('--draft=false'));
+    finalizeRelease({ assets }, 'v1.0.0', args => calls.push(args), () => calls.push(['aliases']));
+    assert.deepEqual(calls[1], ['aliases']);
+    assert.ok(calls[2].includes('--draft=false'));
+    assert.ok(calls[2].includes('--latest'));
+});
+test('alias upload failures and prereleases cannot promote a release', () => {
+    const gh = () => assert.fail('release must not be published');
+    assert.throws(() => finalizeRelease({ assets }, 'v1.0.0', gh, () => { throw new Error('upload failed'); }), /upload failed/);
+    assert.throws(() => finalizeRelease({ assets, prerelease: true }, 'v1.0.0', gh, () => assert.fail('aliases must not upload')), /prerelease/);
 });
 test('retry resumes drafts and repairs incomplete public releases at their original commit', () => {
     for (const draft of [true, false]) {
