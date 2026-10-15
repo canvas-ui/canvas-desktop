@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowUpRight, Bot, Check, ChevronDown, Clock3, Columns2, Command, Grid2X2, Layers3, Plus, Settings2, SlidersHorizontal, X } from 'lucide-react';
 import { addCanvas, scopeKey, scopeUrl, updateLayout } from '../../shell/model';
 import { canvasIcons, canvasNames } from '../canvas-window/CanvasWindow';
@@ -41,14 +42,20 @@ export function Toolbox(services: DesktopServices) {
     if (!scope) return;
     try { store.update(old => updateLayout(old, scopeKey(scope), layout => addCanvas(layout, kind, asTab))); } catch (e) { report(e); }
   }
-  return <div className={`tb-container ${state.toolbox.open ? 'is-open' : ''}`}>
+  return <div className={`tb-container ${state.toolbox.open ? 'is-open' : ''}`} onPointerDown={event => {
+    if (services.native && event.button === 0 && event.target === event.currentTarget) void getCurrentWindow().startDragging().catch(report);
+  }}>
     {state.toolbox.open && <section className="tb-panel" aria-label="Toolbox">
-      <header><span className="tb-symbol"><SlidersHorizontal size={16} /></span><div><strong>Toolbox</strong><small>{state.toolbox.page === 'agents' ? 'Your on-demand team' : 'A little control. A lot of space.'}</small></div><button className="ds-icon-button" aria-label="Close toolbox" onClick={() => update({ open: false })}><X size={15} /></button></header>
+      <header title={services.native ? 'Drag to move toolbox' : undefined} onPointerDown={event => {
+        if (services.native && event.button === 0 && !(event.target as Element).closest('button')) {
+          event.preventDefault(); void getCurrentWindow().startDragging().catch(report);
+        }
+      }}><span className="tb-symbol"><SlidersHorizontal size={16} /></span><div><strong>Toolbox</strong><small>{state.toolbox.page === 'agents' ? 'Your on-demand team' : 'A little control. A lot of space.'}</small></div><button className="ds-icon-button" aria-label="Close toolbox" onClick={() => update({ open: false })}><X size={15} /></button></header>
       <div className="tb-modes" role="tablist" aria-label="Toolbox mode"><button role="tab" aria-selected={state.toolbox.mode === 'context'} onClick={() => update({ mode: 'context', page: 'tools' })}><Layers3 size={13} /> Context</button><button role="tab" aria-selected={state.toolbox.mode === 'global'} onClick={() => update({ mode: 'global', page: 'tools' })}><Command size={13} /> Global</button></div>
       {state.toolbox.page === 'agents' ? <Agents {...services} /> : state.toolbox.mode === 'global' ? <div className="tb-global"><Clock /><button className="tb-wide-action" onClick={() => update({ page: 'agents' })}><Bot size={16} /> Your agents <ArrowUpRight size={13} /></button><button className="tb-wide-action" onClick={services.settings}><Settings2 size={16} /> Desktop preferences <ArrowUpRight size={13} /></button></div> : <>
         <div className="tb-context-path"><span className="ds-live-dot" /><span>{scope ? scopeUrl(scope) : 'Choose a workspace'}</span></div>
         <div className="tb-section"><div className="tb-label">OPEN A CANVAS <label><input type="checkbox" checked={asTab} onChange={event => setAsTab(event.target.checked)} /> as tab</label></div><div className="tb-kind-grid">{kinds.map(kind => { const Icon = canvasIcons[kind]; return <button key={kind} disabled={!scope} onClick={() => add(kind)}><Icon size={18} strokeWidth={1.5} /><span>{canvasNames[kind]}</span><Plus size={11} /></button>; })}</div></div>
-        <div className="tb-section"><div className="tb-label">ARRANGE YOUR SPACE <span>{layout?.frames.length || 0} windows</span></div><div className="tb-arrangements">{([{ id: 'columns', icon: Columns2, name: 'Columns' }, { id: 'grid', icon: Grid2X2, name: 'Grid' }, { id: 'focus', icon: Layers3, name: 'Focus' }] as const).map(({ id, icon: Icon, name }) => <button key={id} aria-pressed={layout?.arrangement === id} disabled={!scope} onClick={() => { if (scope) { store.update(old => updateLayout(old, scopeKey(scope), layout => ({ ...layout, arrangement: id }))); services.tile(); } }}><Icon size={17} /><span>{name}</span></button>)}</div></div>
+        <div className="tb-section"><div className="tb-label">ARRANGE YOUR SPACE <span>{layout?.frames.length || 0} windows</span></div><div className="tb-arrangements">{([{ id: 'columns', icon: Columns2, name: 'Columns' }, { id: 'grid', icon: Grid2X2, name: 'Grid' }, { id: 'focus', icon: Layers3, name: 'Focus' }] as const).map(({ id, icon: Icon, name }) => <button key={id} aria-pressed={layout?.arrangement === id} disabled={!scope} onClick={() => { if (scope) { store.update(old => updateLayout(old, scopeKey(scope), layout => ({ ...layout, arrangement: id }))); if (layout?.arrangement === id) services.tile(); } }}><Icon size={17} /><span>{name}</span></button>)}</div></div>
         <button className="tb-wide-action tb-agent-action" onClick={() => update({ page: 'agents' })}><Bot size={16} /><span>Ask an agent</span><kbd>ctrl alt A</kbd></button>
       </>}
       <footer><span className="ds-live-dot" />{state.toolbox.mode === 'context' ? 'Follows your context' : 'Always within reach'}<ChevronDown size={12} /></footer>

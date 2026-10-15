@@ -19,6 +19,11 @@ pub struct TlsState {
     identities: Arc<Mutex<HashMap<(String, u16), Arc<ClientIdentity>>>>,
     installed: Mutex<HashSet<String>>,
 }
+pub fn forget_window(app: &tauri::AppHandle, label: &str) {
+    if let Ok(mut installed) = app.state::<TlsState>().installed.lock() {
+        installed.remove(label);
+    }
+}
 fn endpoint(url: &str) -> Result<(String, u16), String> {
     let url = tauri::Url::parse(url).map_err(|e| e.to_string())?;
     Ok((

@@ -44,6 +44,40 @@ const server=http.createServer(async(req,res)=>{
 });
 await new Promise(r=>server.listen(1430,'127.0.0.1',r));
 const apiServer=http.createServer((req,res)=>server.emit('request',req,res));await new Promise(r=>apiServer.listen(1431,'127.0.0.1',r));
+if(process.argv.includes('--native')) {
+ // Never inherit the host's Wayland display or HiDPI overrides into Xvfb.
+ const env={...process.env,GDK_BACKEND:'x11',GDK_SCALE:'1',GDK_DPI_SCALE:'1',CANVAS_USER_HOME:path.join(profile,'native-home'),CANVAS_DESKTOP_SMOKE_PROFILE:path.join(profile,'webview'),CANVAS_DESKTOP_SMOKE_URL:'http://127.0.0.1:1430',CANVAS_DESKTOP_SMOKE_WM:process.argv.includes('--window-manager')?'1':'0'};
+ if(process.argv.includes('--composited')){env.WEBKIT_DISABLE_COMPOSITING_MODE='0';env.WEBKIT_DISABLE_DMABUF_RENDERER='1';}
+ const binary=fileURLToPath(new URL('../src-tauri/target/debug/examples/desktop-smoke',import.meta.url));
+ const launch = async (phase, expected) => {
+  const phaseResult = path.join(profile, `native-${phase}.json`);
+  const command = env.CANVAS_DESKTOP_SMOKE_WM === '1' ? ['sh','-c','xfwm4 --compositor=off >/dev/null 2>&1 & wm=$!; "$1"; result=$?; kill "$wm" 2>/dev/null; exit "$result"','native-fixture',binary] : [binary];
+  const native=spawn('dbus-run-session',['--','xvfb-run','-a','-s','-screen 0 1920x1080x24',...command],{env:{...env,CANVAS_DESKTOP_SMOKE_RESULT:phaseResult,CANVAS_DESKTOP_SMOKE_EXPECTED:JSON.stringify(expected || null)},detached:true,stdio:['ignore','pipe','pipe']});
+  let logs='';native.stdout.on('data',data=>logs+=data);native.stderr.on('data',data=>logs+=data);
+  const closed = new Promise(resolve => native.once('close', resolve));
+  try {
+   let report;
+   for(let i=0;i<600;i++){try{report=JSON.parse(await fs.readFile(phaseResult,'utf8'));break;}catch{}if(native.exitCode!==null)throw new Error(`Native process exited ${native.exitCode}: ${logs}`);await new Promise(r=>setTimeout(r,100));}
+   assert.ok(report,`Native result timed out: ${logs}`);assert.equal(report.ok,true,JSON.stringify(report));
+   let timeout;
+   try { assert.equal(await Promise.race([closed,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Native exit timed out: '+logs)),10000);})]),0,logs); }
+   finally { clearTimeout(timeout); }
+   return report;
+  } finally {if(native.exitCode===null)try{process.kill(-native.pid,'SIGTERM');}catch{}}
+ };
+ try {
+  const first = await launch('save');
+  const geometry=JSON.parse(await fs.readFile(path.join(env.CANVAS_USER_HOME,'config/desktop-windows.json'),'utf8'));
+  assert.equal(geometry.version,1);assert.ok(Object.keys(geometry.windows).length>=2);
+  const {id,...rect}=first.expected[0];
+  assert.deepEqual(geometry.windows[id].rect,rect,'The final move must be flushed on exit');
+  const restored = await launch('restore',{windows:first.expected,maximized:first.maximized});
+  assert.equal(restored.restarted,true);
+  console.log('PASS: native windows, tabs, exact canvas/menu/toolbox bounds, context and panel restoration, quit flush and process restart.');
+  console.log(JSON.stringify({first,restored}));
+ } catch(error){console.error(error);process.exitCode=1;} finally {server.close();apiServer.close();}
+ process.exit(process.exitCode||0);
+}
 const chrome=spawn('/usr/bin/google-chrome',['--headless=new','--disable-gpu','--no-sandbox','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--window-size=1440,1000','about:blank']);
 try{
 const wsUrl=await new Promise((resolve,reject)=>{let buf='';chrome.stderr.on('data',c=>{buf+=c;const m=buf.match(/ws:\/\/[^\s]+/);if(m)resolve(m[0]);});chrome.on('exit',code=>reject(new Error('Chrome '+code)));});
@@ -104,6 +138,7 @@ for(let i=0;i<8;i++)timings.push(await evaluate(`new Promise(resolve=>{const sta
 const jsResources=await evaluate(`performance.getEntriesByType('resource').filter(r=>r.name.endsWith('.js')).map(r=>r.name.split('/').pop())`);
 assert.ok(!jsResources.some(name=>name.startsWith('WebApp-')),JSON.stringify(jsResources));
 await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'show-toolbox',mode:'context'})`);
+await new Promise(r=>setTimeout(r,180));
 let shot=await cmd('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,'canvas-desktop-foundation.png'),Buffer.from(shot.data,'base64'));
 await click('[aria-label="Desktop settings"]');
 await evaluate(`(()=>{const select=document.querySelector('[aria-label="Desktop preferences"] select');const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,'top');select.dispatchEvent(new Event('change',{bubbles:true}));})()`);

@@ -49,7 +49,12 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"
 
 [features]
 tls-smoke-test = []
+desktop-smoke-test = []
 
 [[example]]
 name = "tls-smoke"
 required-features = ["tls-smoke-test"]
+
+[[example]]
+name = "desktop-smoke"
+required-features = ["desktop-smoke-test"]

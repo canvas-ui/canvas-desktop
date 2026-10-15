@@ -331,7 +331,13 @@ pub async fn mount_status() -> Result<Value, String> {
 }
 pub fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::new(app)?;
-    for (id, title) in [("menu", "Toggle main menu"), ("minimize-all", "Minimize all"), ("settings", "Settings"), ("mounts", "Mounts & connections"), ("logout", "Log out")] {
+    for (id, title) in [
+        ("menu", "Toggle main menu"),
+        ("minimize-all", "Minimize all"),
+        ("settings", "Settings"),
+        ("mounts", "Mounts & connections"),
+        ("logout", "Log out"),
+    ] {
         menu.append(&MenuItem::with_id(app, id, title, true, None::<&str>)?)?;
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;

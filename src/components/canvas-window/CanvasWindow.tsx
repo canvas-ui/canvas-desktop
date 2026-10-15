@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, File, FileText, Globe, Layers3, Mail, MessageSquare, Plus, RefreshCw, Search, X, Columns2, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { documentRoute, record, type CanvasKind } from '../../desktop-state';
 import { closeTab, detachTab, addCanvas, scopeKey, scopeUrl, updateLayout, type Frame, type Layout } from '../../shell/model';
 import type { DesktopServices } from '../../shell/integration';
@@ -28,6 +29,16 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
   const [query, setQuery] = useState(canvas.query || '');
   const key = scope ? scopeKey(scope) : '';
   const route = scope ? documentRoute(scope, canvas, offset) : '';
+  const lastRoute = useRef('');
+  useEffect(() => {
+    if (native) {
+      const listener = listen<string>('desktop:content-changed', event => { if (event.payload === key) setRevision(value => value + 1); });
+      return () => { void listener.then(unlisten => unlisten()).catch(() => {}); };
+    }
+    const refresh = (event: Event) => { if ((event as CustomEvent).detail === key) setRevision(value => value + 1); };
+    window.addEventListener('desktop:content-changed', refresh);
+    return () => window.removeEventListener('desktop:content-changed', refresh);
+  }, [key, native]);
   const change = (fn: (layout: Layout) => Layout) => {
     try { store.update(state => updateLayout(state, key, fn)); } catch (e) { report(e); }
   };
@@ -35,10 +46,11 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
   useEffect(() => {
     if (!route || canvas.kind === 'browser') { setLoading(false); return; }
     const controller = new AbortController();
-    setLoading(true); setError(''); setDocs([]);
+    setLoading(true); setError('');
+    if (lastRoute.current !== route) { setDocs([]); lastRoute.current = route; }
     void client.get(route, { signal: controller.signal }).then(value => {
       if (!Array.isArray(value)) throw new Error('The server returned an unexpected document list.');
-      if (!controller.signal.aborted) setDocs(value);
+      if (!controller.signal.aborted) { setDocs(value); setSelected(old => old ? value.find((doc: Doc) => doc.id === old.id) : undefined); }
     }).catch(e => { if (!controller.signal.aborted) setError(String(e)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [client, route, revision, canvas.kind]);
@@ -77,7 +89,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
       </article> : <>
         <div className="cw-heading"><div><span className="cw-eyebrow">YOUR CONTEXT, COLLECTED</span><h1>{canvasNames[canvas.kind]}<span>{loading ? '…' : docs.length === 50 ? '50+' : docs.length}</span></h1><p>{scope?.path === '/' ? 'A little space for the bigger picture.' : `Everything connected to ${scope?.path.split('/').filter(Boolean).slice(-1)[0] || 'this place'}.`}</p></div><button className="ds-icon-button" aria-label="Refresh content" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw size={16} className={loading ? 'ds-spin' : ''} /></button></div>
         <label className="cw-search"><Search size={16} /><input aria-label="Search this canvas" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find something in this canvas…" /><kbd>⌕</kbd></label>
-        {loading ? <div className="cw-skeletons" role="status" aria-label="Loading content">{[1, 2, 3].map(i => <div key={i}><i /><span /><span /></div>)}</div> : error ? <div className="ds-error" role="alert">{error}<button onClick={() => setRevision(value => value + 1)}>Try again</button><button onClick={() => { void client.workspaces.start(scope!.workspace).then(() => setRevision(value => value + 1)).catch(report); }}>Start workspace</button></div> : docs.length ? <div className="cw-documents">{docs.map(doc => {
+        {loading && !docs.length ? <div className="cw-skeletons" role="status" aria-label="Loading content">{[1, 2, 3].map(i => <div key={i}><i /><span /><span /></div>)}</div> : error ? <div className="ds-error" role="alert">{error}<button onClick={() => setRevision(value => value + 1)}>Try again</button><button onClick={() => { void client.workspaces.start(scope!.workspace).then(() => setRevision(value => value + 1)).catch(report); }}>Start workspace</button></div> : docs.length ? <div className="cw-documents">{docs.map(doc => {
           const category = kind(doc); const Icon = canvasIcons[category]; const data = record(doc.data);
           return <button className={`cw-document cw-document-${category}`} key={doc.id} onClick={() => setSelected(doc)}><span className="cw-document-icon"><Icon size={20} strokeWidth={1.5} /></span><span className="cw-document-type">{canvasNames[category]}<ArrowUpRight size={13} /></span><strong>{title(doc)}</strong><span className="cw-excerpt">{excerpt(doc) || text(data.from) || 'Open to explore this document.'}</span><span className="cw-document-footer">{text(data.from) || text(data.filename) || 'In this context'}</span></button>;
         })}</div> : <div className="cw-empty"><Layers3 size={38} strokeWidth={1} /><h2>A little room to think.</h2><p>{query ? 'Nothing matches this search. Try another phrase.' : 'Notes, files, and conversations linked to this path will appear here.'}</p><a className="ds-text-button" href="/workspaces">Open workspace in the web UI <ArrowUpRight size={14} /></a></div>}

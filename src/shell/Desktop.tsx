@@ -12,6 +12,7 @@ import { addCanvas, cycleMenu, scopeKey, scopeUrl, updateLayout, type Scope } fr
 import type { DesktopServices, DesktopWidget } from './integration';
 import { native, surface, syncWindows, tileWindows, stopWindows } from './native';
 import { installAutomation } from './automation';
+import { watchContext } from './live';
 import './desktop.css';
 
 const MountSetup = lazy(() => import('./MountSetup'));
@@ -81,8 +82,8 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
   const store = useMemo(() => createDesktopStore(account.id), [account.id]);
   const state = useDesktopState(store);
   const [error, setError] = useState(store.error());
-  const [settings, setSettings] = useState(false);
-  const [mounts, setMounts] = useState(false);
+  const [settings, setSettings] = useState(new URLSearchParams(location.search).get('action') === 'settings');
+  const [mounts, setMounts] = useState(new URLSearchParams(location.search).get('action') === 'mounts');
   const query = useMemo(() => new URLSearchParams(location.search), []);
   const boundKey = surface === 'canvas' ? query.get('scope') : null;
   const boundScope = useMemo(() => {
@@ -93,10 +94,29 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
   const key = scope ? scopeKey(scope) : '';
   const layout = state.layouts[key];
   const report = (error: unknown) => setError(String(error));
-  const nativeKey = JSON.stringify([state.scope, layout?.frames.map(frame => [frame.id, frame.tabs.find(tab => tab.id === frame.active)?.title]), layout?.focused, layout?.arrangement, state.gap, state.placement, state.menu, state.toolbox.open]);
-  const services: DesktopServices = { client, store, state, scope, layout, account: account.email || account.id, native, report, settings: () => setSettings(true), mounts: () => setMounts(true), logout, tile: () => { void tileWindows().catch(report); } };
+  const nativeKey = JSON.stringify([state.scope, layout?.frames.map(frame => [frame.id, frame.tabs.find(tab => tab.id === frame.active)?.title]), layout?.focused, layout?.arrangement, state.gap, state.placement, state.menu === 'hidden', state.toolbox.open]);
+  const services: DesktopServices = { client, store, state, scope, layout, account: account.email || account.id, native, report, settings: () => setSettings(true), mounts: () => setMounts(true), logout, changeServer, tile: () => { void tileWindows().catch(report); } };
   useEffect(() => () => store.dispose(), [store]);
   useEffect(() => installAutomation(store), [store]);
+  useEffect(() => { if (query.get('action') === 'logout') logout(); }, []);
+  useEffect(() => {
+    if (surface === 'desktop' && state.scope) return watchContext(client.baseUrl, state.scope);
+  }, [client, state.scope && scopeKey(state.scope)]);
+  useEffect(() => {
+    if (!settings && !mounts) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    const trap = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSettings(false); setMounts(false); }
+      if (event.key !== 'Tab' || !dialog) return;
+      const controls = [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')];
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', trap, true);
+    return () => { document.removeEventListener('keydown', trap, true); if (previous?.isConnected) previous.focus(); };
+  }, [settings, mounts]);
   useEffect(() => { void syncWindows(state, JSON.stringify([client.baseUrl, account.id])).catch(report); }, [nativeKey, store]);
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
@@ -110,11 +130,7 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     };
     window.addEventListener('keydown', keyboard);
     if (!native) return () => window.removeEventListener('keydown', keyboard);
-    let geometryTimer: ReturnType<typeof setTimeout> | undefined;
-    const listeners = [listen('desktop:geometry', () => {
-      clearTimeout(geometryTimer);
-      geometryTimer = setTimeout(() => { void invoke('desktop_save_geometry').catch(report); }, 350);
-    }), listen<string>('desktop:action', ({ payload }) => {
+    const listeners = [listen<string>('desktop:error', ({ payload }) => report(payload)), listen<string>('desktop:action', ({ payload }) => {
       if (payload === 'settings') setSettings(true);
       else if (payload === 'mounts') setMounts(true);
       else if (payload === 'logout') logout();
@@ -127,11 +143,15 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     }), listen('desktop:focused', () => {
       if (surface === 'canvas' && store.get().scope && scopeKey(store.get().scope!) === key) store.update(old => updateLayout(old, key, layout => ({ ...layout, focused: query.get('frame') || layout.focused })));
     })];
-    return () => { clearTimeout(geometryTimer); window.removeEventListener('keydown', keyboard); listeners.forEach(promise => { void promise.then(unlisten => unlisten()).catch(report); }); };
+    return () => { window.removeEventListener('keydown', keyboard); listeners.forEach(promise => { void promise.then(unlisten => unlisten()).catch(report); }); };
   }, [store, key]);
   const frame = surface === 'canvas' ? layout?.frames.find(frame => frame.id === query.get('frame')) : undefined;
   const visibleFrames = layout?.arrangement === 'focus' ? layout.frames.filter(frame => frame.id === layout.focused) : layout?.frames || [];
-  return <div className={`ds-root ds-surface-${surface} ${native ? 'ds-native' : 'ds-preview'} ds-menu-${state.menu} ds-placement-${state.placement}`} style={{ '--ds-gap': `${state.gap}px` } as CSSProperties}>
+  return <div className={`ds-root ds-surface-${surface} ${native ? 'ds-native' : 'ds-preview'} ds-menu-${state.menu} ds-placement-${state.placement} ${state.toolbox.open ? 'ds-toolbox-open' : ''}`} style={{ '--ds-gap': `${state.gap}px` } as CSSProperties} onClickCapture={event => {
+    if (!native) return;
+    const link = (event.target as Element).closest('a[href^="/"]');
+    if (link) { event.preventDefault(); void invoke('desktop_open_web', { path: link.getAttribute('href') }).catch(report); }
+  }}>
     {surface === 'canvas' ? frame ? <CanvasWindow frame={frame} services={services} /> : <div className="ds-empty">This canvas has been closed.</div> : surface === 'toolbox' ? <Toolbox {...services} /> : <>
       <MainMenu {...services} />
       {!native && <main className="ds-stage"><header className="ds-stage-heading"><div><span className="cw-eyebrow">A SPACE THAT FOLLOWS YOUR FOCUS</span><span className="ds-stage-location">{scope ? scopeUrl(scope) : 'Welcome to your desktop'}</span></div><span className="ds-local-label"><span className="ds-live-dot" /> Saved on this device</span></header><div className={`ds-canvas-stage ds-arrangement-${layout?.arrangement || 'columns'} ds-count-${visibleFrames.length}`}>

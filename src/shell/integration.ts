@@ -17,6 +17,7 @@ export type DesktopServices = {
   settings: () => void;
   mounts: () => void;
   logout: () => void;
+  changeServer: () => void;
   tile: () => void;
 };
 export type DesktopWidget = { id: string; title: string; component: ComponentType<DesktopServices> };

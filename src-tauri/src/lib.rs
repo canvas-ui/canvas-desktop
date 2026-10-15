@@ -1,6 +1,8 @@
 mod browser;
 mod config;
 mod desktop;
+#[cfg(feature = "desktop-smoke-test")]
+mod desktop_smoke;
 mod fuse;
 mod runtime_path;
 mod tls;
@@ -53,9 +55,9 @@ pub fn run() {
             browser::open_browser,
             desktop::desktop_sync,
             desktop::desktop_tile,
-            desktop::desktop_save_geometry,
             desktop::desktop_hide_surfaces,
-            desktop::desktop_reveal_menu
+            desktop::desktop_reveal_menu,
+            desktop::desktop_open_web
         ])
         .on_window_event(|window, event| {
             desktop::window_event(window, event);
@@ -75,6 +77,7 @@ pub fn run() {
                 .tooltip("canvas")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" | "restart-ui" => {
+                        desktop::restore_active(app);
                         if let Err(error) = open_main_ui(app, event.id.as_ref() == "restart-ui") {
                             eprintln!("Unable to open Canvas UI: {error}");
                         }
@@ -83,13 +86,26 @@ pub fn run() {
                     "menu" | "settings" | "mounts" | "logout" => {
                         if open_main_ui(app, false).is_ok() {
                             if let Some(main) = app.get_webview_window("main") {
-                                let _ = main.emit("desktop:action", event.id.as_ref());
+                                if let Ok(mut url) = main.url() {
+                                    if !["/", "/index.html", "/desktop"].contains(&url.path()) {
+                                        url.set_path("/");
+                                        url.set_query(Some(&format!(
+                                            "action={}",
+                                            event.id.as_ref()
+                                        )));
+                                        let _ = main.navigate(url);
+                                    } else {
+                                        let _ = main.emit("desktop:action", event.id.as_ref());
+                                    }
+                                }
                             }
                         }
                     }
                     "minimize-all" => {
                         for window in app.webview_windows().values() {
-                            if window.is_visible().unwrap_or(false) { let _ = window.minimize(); }
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.minimize();
+                            }
                         }
                     }
                     id => fuse::handle_menu_event(app, id),
@@ -98,22 +114,28 @@ pub fn run() {
             fuse::rebuild_tray_menu(app.handle())?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Error running Canvas Desktop");
+        .build(tauri::generate_context!())
+        .expect("Error building Canvas Desktop")
+        .run(desktop::run_event);
 }
 
 #[cfg(target_os = "linux")]
 fn configure_linux_renderer() {
-    // Proprietary NVIDIA drivers can render a blank webview even when the
-    // DMABUF renderer is disabled. This small tray/setup app defaults to the
-    // non-composited path; explicit environment settings remain authoritative.
+    // Keep accelerated compositing on healthy drivers. The old tray prototype
+    // disabled it on every Linux machine, limiting the desktop's paint budget.
+    // Retain the blank-webview workaround on proprietary NVIDIA systems;
+    // explicit environment settings remain authoritative on every driver.
     // https://github.com/tauri-apps/tauri/issues/9394
-    for key in [
-        "WEBKIT_DISABLE_DMABUF_RENDERER",
-        "WEBKIT_DISABLE_COMPOSITING_MODE",
-    ] {
-        if std::env::var_os(key).is_none() {
-            std::env::set_var(key, "1");
+    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists()
+        || std::env::var("__GLX_VENDOR_LIBRARY_NAME").as_deref() == Ok("nvidia");
+    if nvidia {
+        for key in [
+            "WEBKIT_DISABLE_DMABUF_RENDERER",
+            "WEBKIT_DISABLE_COMPOSITING_MODE",
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, "1");
+            }
         }
     }
     // CLUTTER_BACKEND does not select GTK's display backend. Honor an existing
@@ -128,4 +150,11 @@ fn configure_linux_renderer() {
 #[cfg(feature = "tls-smoke-test")]
 pub fn run_tls_smoke() {
     tls::smoke::run();
+}
+
+#[cfg(feature = "desktop-smoke-test")]
+pub fn run_desktop_smoke() {
+    #[cfg(target_os = "linux")]
+    configure_linux_renderer();
+    desktop_smoke::run();
 }
