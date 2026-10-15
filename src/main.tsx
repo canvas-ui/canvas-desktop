@@ -5,11 +5,13 @@ import { scopedStorage, serverUrl } from './web-session';
 import { TlsFields } from './TlsFields';
 import type { ClientTls, Remote } from './backend';
 type Setup = { remotes: Record<string, Remote> };
-import './web-host.css';
+import './host.css';
 
 const rawStorage = window.localStorage;
 const connectionKey = 'canvas.desktop.connection';
-const WebApp = lazy(() => import('@web/App'));
+const WebApp = lazy(() => import('./shell/WebApp'));
+const Desktop = lazy(() => import('./shell/Desktop'));
+const desktopRoute = location.pathname === '/' || location.pathname === '/desktop';
 
 type Connection = { url: string; remote?: string };
 async function start() {
@@ -52,7 +54,7 @@ function Host({ initial, desired, setup, initialError }: { initial?: Connection;
   const [busy, setBusy] = useState(false);
   const [selecting, setSelecting] = useState(!initial);
   useEffect(() => {
-    if (connection) void import('@web/lib/wallpaper').then(m => m.applyWallpaper());
+    if (connection && !desktopRoute) void import('@web/lib/wallpaper').then(m => m.applyWallpaper());
   }, [connection]);
   async function connect() {
     setBusy(true); setError('');
@@ -74,8 +76,8 @@ function Host({ initial, desired, setup, initialError }: { initial?: Connection;
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   }
   return <>
-    {connection && <Suspense fallback={<div className="desktop-loading">Loading Canvas…</div>}><WebApp /></Suspense>}
-    {connection && <button className="desktop-server-switch" title={connection.url} onClick={() => setSelecting(true)}>Server</button>}
+    {connection && <Suspense fallback={<div className="desktop-loading">Opening canvas…</div>}>{desktopRoute ? <Desktop url={connection.url} changeServer={() => setSelecting(true)} /> : <WebApp />}</Suspense>}
+    {connection && !desktopRoute && <><a className="desktop-return" href="/">← Desktop</a><button className="desktop-server-switch" title={connection.url} onClick={() => setSelecting(true)}>Server</button></>}
     {selecting && <div className="desktop-connect-backdrop"><form className="desktop-connect" onSubmit={e => { e.preventDefault(); void connect(); }}>
       <h1>Connect to Canvas</h1><p>Choose a server, then sign in using the Canvas login screen.</p>
       {setup && Object.keys(setup.remotes).length > 0 && <label>Saved remote<select value={remote} onChange={e => { setRemote(e.target.value); const entry = setup.remotes[e.target.value]; if (entry) { setUrl(entry.url); setTls(entry.tls); } else setTls(undefined); }}><option value="">Enter a server address</option>{Object.keys(setup.remotes).map(id => <option key={id}>{id}</option>)}</select></label>}
