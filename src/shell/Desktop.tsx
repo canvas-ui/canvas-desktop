@@ -11,6 +11,7 @@ import { createDesktopStore, useDesktopState } from './store';
 import { addCanvas, cycleMenu, scopeKey, scopeUrl, updateLayout, type Scope } from './model';
 import type { DesktopServices, DesktopWidget } from './integration';
 import { native, surface, syncWindows, tileWindows, stopWindows } from './native';
+import { installAutomation } from './automation';
 import './desktop.css';
 
 const MountSetup = lazy(() => import('./MountSetup'));
@@ -95,6 +96,7 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
   const nativeKey = JSON.stringify([state.scope, layout?.frames.map(frame => [frame.id, frame.tabs.find(tab => tab.id === frame.active)?.title]), layout?.focused, layout?.arrangement, state.gap, state.placement, state.menu, state.toolbox.open]);
   const services: DesktopServices = { client, store, state, scope, layout, account: account.email || account.id, native, report, settings: () => setSettings(true), mounts: () => setMounts(true), logout, tile: () => { void tileWindows().catch(report); } };
   useEffect(() => () => store.dispose(), [store]);
+  useEffect(() => installAutomation(store), [store]);
   useEffect(() => { void syncWindows(state, JSON.stringify([client.baseUrl, account.id])).catch(report); }, [nativeKey, store]);
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
@@ -108,7 +110,11 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     };
     window.addEventListener('keydown', keyboard);
     if (!native) return () => window.removeEventListener('keydown', keyboard);
-    const listeners = [listen<string>('desktop:action', ({ payload }) => {
+    let geometryTimer: ReturnType<typeof setTimeout> | undefined;
+    const listeners = [listen('desktop:geometry', () => {
+      clearTimeout(geometryTimer);
+      geometryTimer = setTimeout(() => { void invoke('desktop_save_geometry').catch(report); }, 350);
+    }), listen<string>('desktop:action', ({ payload }) => {
       if (payload === 'settings') setSettings(true);
       else if (payload === 'mounts') setMounts(true);
       else if (payload === 'logout') logout();
@@ -121,7 +127,7 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     }), listen('desktop:focused', () => {
       if (surface === 'canvas' && store.get().scope && scopeKey(store.get().scope!) === key) store.update(old => updateLayout(old, key, layout => ({ ...layout, focused: query.get('frame') || layout.focused })));
     })];
-    return () => { window.removeEventListener('keydown', keyboard); listeners.forEach(promise => { void promise.then(unlisten => unlisten()).catch(report); }); };
+    return () => { clearTimeout(geometryTimer); window.removeEventListener('keydown', keyboard); listeners.forEach(promise => { void promise.then(unlisten => unlisten()).catch(report); }); };
   }, [store, key]);
   const frame = surface === 'canvas' ? layout?.frames.find(frame => frame.id === query.get('frame')) : undefined;
   const visibleFrames = layout?.arrangement === 'focus' ? layout.frames.filter(frame => frame.id === layout.focused) : layout?.frames || [];

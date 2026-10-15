@@ -28,7 +28,7 @@ function Agents({ client, report }: DesktopServices) {
   async function send() {
     if (!agent || !prompt.trim()) return;
     setBusy(true); setSent(false);
-    try { await client.agents.prompt(agent, { prompt: prompt.trim() }); setSent(true); setPrompt(''); }
+    try { await client.agents.prompt(agent, { message: prompt.trim() }); setSent(true); setPrompt(''); }
     catch (e) { report(e); } finally { setBusy(false); }
   }
   return <div className="tb-agents"><div className="tb-label">A LITTLE EXTRA HELP</div>{loading ? <p role="status">Finding your agents…</p> : error ? <p role="alert">{error}</p> : !agents.length ? <p>No agents connected yet. <a href="/agents">Manage agents <ArrowUpRight size={12} /></a></p> : <form onSubmit={event => { event.preventDefault(); void send(); }}><label>Agent<select value={agent} onChange={event => setAgent(event.target.value)}>{agents.map(row => <option value={row.id} key={row.id}>{row.name || row.id}</option>)}</select></label><textarea aria-label="Agent task" placeholder="What would you like a hand with?" rows={4} value={prompt} onChange={event => { setPrompt(event.target.value); setSent(false); }} /><button className="tb-submit" disabled={busy || !prompt.trim()}>{busy ? 'Sending…' : 'Send task'}<ArrowUpRight size={14} /></button>{sent && <p role="status"><Check size={14} /> Task sent. <a href="/agents">View conversation</a></p>}</form>}</div>;

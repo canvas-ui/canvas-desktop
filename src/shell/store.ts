@@ -19,11 +19,14 @@ export function createDesktopStore(account: string) {
       read(); listeners.forEach(listener => listener());
     }
   };
-  window.addEventListener('storage', onStorage);
   return {
     get: () => state,
     error: () => error,
-    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribe: (listener: () => void) => {
+      if (!listeners.size) window.addEventListener('storage', onStorage);
+      listeners.add(listener);
+      return () => { listeners.delete(listener); if (!listeners.size) window.removeEventListener('storage', onStorage); };
+    },
     update: (update: (state: DesktopState) => DesktopState) => {
       // Re-read before modifying to merge updates from independent webviews.
       read();

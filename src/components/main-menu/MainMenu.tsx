@@ -88,7 +88,7 @@ export function MainMenu(services: DesktopServices) {
           const hasChildren = path !== '/' && treePaths.some(other => other.startsWith(path + '/'));
           return <div className={`mm-tree-row ${isCurrent ? 'is-active' : ''}`} key={path} style={{ paddingLeft: Math.max(0, depth - 1) * 14 }}>
             {hasChildren ? <button className="mm-tree-chevron" aria-label={`${collapsed.has(path) ? 'Expand' : 'Collapse'} ${path}`} onClick={() => setCollapsed(old => { const next = new Set(old); if (next.has(path)) next.delete(path); else next.add(path); return next; })}>{collapsed.has(path) ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="mm-tree-chevron" />}
-            <button className="mm-tree-path" aria-current={isCurrent ? 'page' : undefined} title={path} onClick={() => go(path)}>{isCurrent ? <FolderOpen size={15} /> : path === '/' ? <Layers3 size={15} /> : <Folder size={15} />}<span>{path === '/' ? 'All content' : path.split('/').at(-1)}</span>{isCurrent && <span className="mm-current-mark" />}</button>
+            <button className="mm-tree-path" aria-current={isCurrent ? 'page' : undefined} title={path} onClick={() => go(path)}>{isCurrent ? <FolderOpen size={15} /> : path === '/' ? <Layers3 size={15} /> : <Folder size={15} />}<span>{path === '/' ? 'All content' : path.split('/').slice(-1)[0]}</span>{isCurrent && <span className="mm-current-mark" />}</button>
           </div>;
         })}</nav>
       </>}

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, File, FileText, Globe, Layers3, Mail, MessageSquare, Plus, RefreshCw, Search, X, Columns2, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { documentRoute, record, type CanvasKind } from '../../desktop-state';
-import { closeTab, detachTab, addCanvas, scopeKey, scopeUrl, updateLayout, type Frame } from '../../shell/model';
+import { closeTab, detachTab, addCanvas, scopeKey, scopeUrl, updateLayout, type Frame, type Layout } from '../../shell/model';
 import type { DesktopServices } from '../../shell/integration';
 import './canvas-window.css';
 
@@ -28,7 +28,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
   const [query, setQuery] = useState(canvas.query || '');
   const key = scope ? scopeKey(scope) : '';
   const route = scope ? documentRoute(scope, canvas, offset) : '';
-  const change = (fn: (layout: NonNullable<typeof layout>) => NonNullable<typeof layout>) => {
+  const change = (fn: (layout: Layout) => Layout) => {
     try { store.update(state => updateLayout(state, key, fn)); } catch (e) { report(e); }
   };
   useEffect(() => { setOffset(0); setSelected(undefined); setQuery(canvas.query || ''); }, [key, canvas.id, canvas.query]);
@@ -75,7 +75,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
         <button className="ds-text-button" onClick={() => setSelected(undefined)}><ArrowLeft size={15} /> Back to {canvasNames[canvas.kind].toLowerCase()}</button><span className="cw-eyebrow">{canvasNames[kind(selected)]}</span><h1>{title(selected)}</h1><p className="cw-document-text">{excerpt(selected) || 'This document has no text preview.'}</p>
         {typeof selected.data?.url === 'string' && <button className="ds-text-button" onClick={() => void browse(selected.data!.url as string)}>Open source <ArrowUpRight size={14} /></button>}
       </article> : <>
-        <div className="cw-heading"><div><span className="cw-eyebrow">YOUR CONTEXT, COLLECTED</span><h1>{canvasNames[canvas.kind]}<span>{loading ? '…' : docs.length === 50 ? '50+' : docs.length}</span></h1><p>{scope?.path === '/' ? 'A little space for the bigger picture.' : `Everything connected to ${scope?.path.split('/').filter(Boolean).at(-1) || 'this place'}.`}</p></div><button className="ds-icon-button" aria-label="Refresh content" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw size={16} className={loading ? 'ds-spin' : ''} /></button></div>
+        <div className="cw-heading"><div><span className="cw-eyebrow">YOUR CONTEXT, COLLECTED</span><h1>{canvasNames[canvas.kind]}<span>{loading ? '…' : docs.length === 50 ? '50+' : docs.length}</span></h1><p>{scope?.path === '/' ? 'A little space for the bigger picture.' : `Everything connected to ${scope?.path.split('/').filter(Boolean).slice(-1)[0] || 'this place'}.`}</p></div><button className="ds-icon-button" aria-label="Refresh content" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw size={16} className={loading ? 'ds-spin' : ''} /></button></div>
         <label className="cw-search"><Search size={16} /><input aria-label="Search this canvas" value={query} onChange={e => setQuery(e.target.value)} placeholder="Find something in this canvas…" /><kbd>⌕</kbd></label>
         {loading ? <div className="cw-skeletons" role="status" aria-label="Loading content">{[1, 2, 3].map(i => <div key={i}><i /><span /><span /></div>)}</div> : error ? <div className="ds-error" role="alert">{error}<button onClick={() => setRevision(value => value + 1)}>Try again</button><button onClick={() => { void client.workspaces.start(scope!.workspace).then(() => setRevision(value => value + 1)).catch(report); }}>Start workspace</button></div> : docs.length ? <div className="cw-documents">{docs.map(doc => {
           const category = kind(doc); const Icon = canvasIcons[category]; const data = record(doc.data);
@@ -83,6 +83,6 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
         })}</div> : <div className="cw-empty"><Layers3 size={38} strokeWidth={1} /><h2>A little room to think.</h2><p>{query ? 'Nothing matches this search. Try another phrase.' : 'Notes, files, and conversations linked to this path will appear here.'}</p><a className="ds-text-button" href="/workspaces">Open workspace in the web UI <ArrowUpRight size={14} /></a></div>}
       </>}
     </div>
-    <footer className="cw-footer"><span><span className="ds-live-dot" /> {loading ? 'Loading context' : 'Context connected'}</span><span className="cw-pagination"><button disabled={!offset || loading} onClick={() => setOffset(value => Math.max(0, value - 50))}>Previous</button><span>{offset + 1}–{offset + docs.length}</span><button disabled={docs.length < 50 || loading} onClick={() => setOffset(value => value + 50)}>Next</button></span></footer>
+    <footer className="cw-footer"><span><span className="ds-live-dot" /> {loading ? 'Loading context' : error ? 'Could not load content' : 'Context connected'}</span><span className="cw-pagination"><button disabled={!offset || loading} onClick={() => setOffset(value => Math.max(0, value - 50))}>Previous</button><span>{docs.length ? offset + 1 : 0}–{offset + docs.length}</span><button disabled={docs.length < 50 || loading} onClick={() => setOffset(value => value + 50)}>Next</button></span></footer>
   </section>;
 }

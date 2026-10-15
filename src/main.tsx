@@ -1,6 +1,6 @@
 import { StrictMode, lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { scopedStorage, serverUrl } from './web-session';
 import { TlsFields } from './TlsFields';
 import type { ClientTls, Remote } from './backend';
@@ -11,7 +11,7 @@ const rawStorage = window.localStorage;
 const connectionKey = 'canvas.desktop.connection';
 const WebApp = lazy(() => import('./shell/WebApp'));
 const Desktop = lazy(() => import('./shell/Desktop'));
-const desktopRoute = location.pathname === '/' || location.pathname === '/desktop';
+const desktopRoute = ['/', '/desktop', '/index.html'].includes(location.pathname);
 
 type Connection = { url: string; remote?: string };
 async function start() {
@@ -55,6 +55,7 @@ function Host({ initial, desired, setup, initialError }: { initial?: Connection;
   const [selecting, setSelecting] = useState(!initial);
   useEffect(() => {
     if (connection && !desktopRoute) void import('@web/lib/wallpaper').then(m => m.applyWallpaper());
+    if (connection && !desktopRoute && isTauri()) void invoke('desktop_hide_surfaces').catch(() => {});
   }, [connection]);
   async function connect() {
     setBusy(true); setError('');

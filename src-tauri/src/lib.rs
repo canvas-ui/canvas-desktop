@@ -1,9 +1,10 @@
 mod browser;
 mod config;
+mod desktop;
 mod fuse;
 mod runtime_path;
 mod tls;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub(crate) fn open_main_ui(app: &tauri::AppHandle, restart: bool) -> tauri::Result<()> {
     let window = if let Some(window) = app.get_webview_window("main") {
@@ -33,6 +34,7 @@ pub fn run() {
     configure_linux_renderer();
     tauri::Builder::default()
         .manage(tls::TlsState::default())
+        .manage(desktop::DesktopState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -48,9 +50,15 @@ pub fn run() {
             config::save_setup,
             fuse::mount_action,
             fuse::mount_status,
-            browser::open_browser
+            browser::open_browser,
+            desktop::desktop_sync,
+            desktop::desktop_tile,
+            desktop::desktop_save_geometry,
+            desktop::desktop_hide_surfaces,
+            desktop::desktop_reveal_menu
         ])
         .on_window_event(|window, event| {
+            desktop::window_event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;
@@ -64,7 +72,7 @@ pub fn run() {
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/tray.png"
                 ))?)
-                .tooltip("Canvas Desktop")
+                .tooltip("canvas")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" | "restart-ui" => {
                         if let Err(error) = open_main_ui(app, event.id.as_ref() == "restart-ui") {
@@ -72,6 +80,18 @@ pub fn run() {
                         }
                     }
                     "quit" => app.exit(0),
+                    "menu" | "settings" | "mounts" | "logout" => {
+                        if open_main_ui(app, false).is_ok() {
+                            if let Some(main) = app.get_webview_window("main") {
+                                let _ = main.emit("desktop:action", event.id.as_ref());
+                            }
+                        }
+                    }
+                    "minimize-all" => {
+                        for window in app.webview_windows().values() {
+                            if window.is_visible().unwrap_or(false) { let _ = window.minimize(); }
+                        }
+                    }
                     id => fuse::handle_menu_event(app, id),
                 })
                 .build(app)?;
