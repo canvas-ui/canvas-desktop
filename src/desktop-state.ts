@@ -1,10 +1,11 @@
 export type Metadata = Record<string, unknown>;
-export type CanvasKind = 'content' | 'emails' | 'messages' | 'notes' | 'files' | 'tabs' | 'browser';
-export type Canvas = { id: string; kind: CanvasKind; title: string; width: number; height: number; url?: string; query?: string };
+export type CanvasKind = 'content' | 'emails' | 'messages' | 'notes' | 'files' | 'tabs' | 'browser' | 'web';
+// `url` is a web page (browser tabs); `location` is a web UI route (web tabs).
+export type Canvas = { id: string; kind: CanvasKind; title: string; width: number; height: number; url?: string; query?: string; location?: string };
 export type Arrangement = { version: 1; canvases: Canvas[] };
-export const kinds: CanvasKind[] = ['content', 'emails', 'messages', 'notes', 'files', 'tabs', 'browser'];
+export const kinds: CanvasKind[] = ['content', 'emails', 'messages', 'notes', 'files', 'tabs', 'browser', 'web'];
 export function newCanvas(kind: CanvasKind): Canvas {
-  return { id: crypto.randomUUID(), kind, title: kind === 'content' ? 'Content' : kind[0].toUpperCase() + kind.slice(1), width: 1, height: 360 };
+  return { id: crypto.randomUUID(), kind, title: kind === 'content' ? 'Content' : kind === 'web' ? 'Home' : kind[0].toUpperCase() + kind.slice(1), width: 1, height: 360 };
 }
 export function record(value: unknown): Metadata {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Metadata : {};
@@ -22,7 +23,7 @@ export function readArrangement(metadata: unknown): Arrangement {
     if (typeof c.id !== 'string' || !c.id || ids.has(c.id) || !kinds.includes(c.kind as CanvasKind)
       || typeof c.title !== 'string' || ![1, 2, 3].includes(c.width as number)
       || typeof c.height !== 'number' || !Number.isFinite(c.height) || c.height < 200 || c.height > 1200
-      || (c.url !== undefined && typeof c.url !== 'string') || (c.query !== undefined && typeof c.query !== 'string')) {
+      || (c.url !== undefined && typeof c.url !== 'string') || (c.query !== undefined && typeof c.query !== 'string') || (c.location !== undefined && typeof c.location !== 'string')) {
       throw new Error('Invalid desktop layout. Saved metadata was left untouched.');
     }
     ids.add(c.id);

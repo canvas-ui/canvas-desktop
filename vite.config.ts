@@ -25,7 +25,8 @@ export default defineConfig({
   publicDir: `${web}/public`,
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   resolve: {
-    dedupe: ['react', 'react-dom'],
+    // One router instance: the desktop supplies router contexts to webui pages.
+    dedupe: ['react', 'react-dom', 'react-router', 'react-router-dom'],
     alias: [
       { find: 'virtual:pwa-register', replacement: fileURLToPath(new URL('./src/pwa-disabled.ts', import.meta.url)) },
       { find: '@web', replacement: `${web}/src` },

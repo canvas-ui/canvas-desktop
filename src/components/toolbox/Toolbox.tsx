@@ -7,7 +7,7 @@ import type { CanvasKind } from '../../desktop-state';
 import type { DesktopServices } from '../../shell/integration';
 import './toolbox.css';
 
-const kinds: CanvasKind[] = ['content', 'notes', 'files', 'emails', 'messages', 'tabs', 'browser'];
+const kinds: CanvasKind[] = ['content', 'web', 'notes', 'files', 'emails', 'messages', 'tabs', 'browser'];
 function Clock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => { const timer = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(timer); }, []);

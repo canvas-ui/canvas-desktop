@@ -23,6 +23,9 @@ const server=http.createServer(async(req,res)=>{
  else if(p.endsWith('/auth/login')){loginCalls++;if(payload.password!=='correct-password'){res.writeHead(401,{'Content-Type':'application/json'});res.end(JSON.stringify({status:'error',message:'Invalid credentials',statusCode:401}));return;}value={token:'canvas-test-token',user:{id:'test',email:'admin@canvas.local',userType:'admin'}};}
  else if(p.endsWith('/auth/me'))value={id:'test',email:'admin@canvas.local',userType:'admin',status:'active'};
  else if(p==='/rest/v2/workspaces')value=[{id:'ws-id',name:'universe',label:'Universe',status:'available',owner:'test',type:'workspace'},{id:'personal',name:'personal',label:'Personal',status:'available'}];
+ else if(/^\/rest\/v2\/workspaces\/[^/]+$/.test(p))value={id:'ws-id',name:'universe',label:'Universe',status:'active',owner:'test',type:'workspace',metadata:{}};
+ else if(p.endsWith('/status'))value={status:'active'};
+ else if(/\/tree$/.test(p))value={id:'/',name:'/',label:'/',type:'universe',children:[]};
  else if(p.endsWith('/trees'))value=[{name:'context',type:'context',label:'Contexts'},{name:'projects',type:'directory',label:'Projects'}];
  else if(p.endsWith('/paths'))value=['/work','/work/customer-foo','/work/customer-foo/ops','/work/customer-foo/ops/snow-12345','/work/customer-foo/ops/snow-12346','/work/customer-bar','/personal','/research'];
  else if(p.endsWith('/documents')){documentQueries.push(Object.fromEntries(url.searchParams));value=[
@@ -79,6 +82,7 @@ if(process.argv.includes('--native')) {
  } catch(error){console.error(error);process.exitCode=1;} finally {server.close();apiServer.close();}
  process.exit(process.exitCode||0);
 }
+const pageErrors=[];
 const chrome=spawn('/usr/bin/google-chrome',['--headless=new','--disable-gpu','--no-sandbox','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--window-size=1440,1000','about:blank']);
 try{
 const wsUrl=await new Promise((resolve,reject)=>{let buf='';chrome.stderr.on('data',c=>{buf+=c;const m=buf.match(/ws:\/\/[^\s]+/);if(m)resolve(m[0]);});chrome.on('exit',code=>reject(new Error('Chrome '+code)));});
@@ -88,6 +92,8 @@ const send=(method,params={},sessionId)=>new Promise((resolve,reject)=>{const id
 const {targetId}=await send('Target.createTarget',{url:'about:blank'});const {sessionId}=await send('Target.attachToTarget',{targetId,flatten:true});
 const cmd=(m,p)=>send(m,p,sessionId);
 await cmd('Page.enable');await cmd('Runtime.enable');
+// Page exceptions and console errors explain a failed step better than a missing selector.
+ws.addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.method==='Runtime.exceptionThrown')pageErrors.push(m.params.exceptionDetails.exception?.description||m.params.exceptionDetails.text);if(m.method==='Runtime.consoleAPICalled'&&m.params.type==='error')pageErrors.push(m.params.args.map(a=>a.value||a.description||'').join(' '));});
 await cmd('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('canvas.desktop.connection',JSON.stringify({url:'http://127.0.0.1:1431'}));window.nativeCalls=[];window.__TAURI_INTERNALS__={invoke:async(cmd)=>{window.nativeCalls.push(cmd);if(cmd==='load_remotes')return {};if(cmd==='activate_tls')return null;throw new Error('Unexpected native operation '+cmd);}};`});
 await cmd('Page.navigate',{url:'http://127.0.0.1:1430/'});
 const evaluate=async expression=>{const {result,exceptionDetails}=await cmd('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(exceptionDetails)throw new Error(JSON.stringify(exceptionDetails));return result.value;};
@@ -106,12 +112,12 @@ assert.deepEqual(await evaluate('window.nativeCalls'),['load_remotes','activate_
 await waitFor(`document.querySelector('[aria-label="Virtual directory tree"]') && document.querySelector('.cw-window')`);
 const click=async selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 await click('.mm-tree-path[title="/work/customer-foo/ops/snow-12345"]');
-await waitFor(`document.querySelector('.cw-location').textContent.includes('snow-12345') && document.querySelectorAll('.cw-document').length===6`);
-assert.ok(documentQueries.some(q=>q.context==='/work/customer-foo/ops/snow-12345' && q.treeNameOrTreeId==='context'));
+await waitFor(`document.querySelector('.cw-location').textContent.includes('snow-12345') && document.querySelector('.cw-web') && !document.body.innerText.includes('Workspace unavailable')`);
 await click('[aria-label="Open toolbox"]');
 await waitFor(`document.querySelector('[aria-label="Toolbox"]')`);
 await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Notes')).click()`);
-await waitFor(`document.querySelectorAll('.cw-window').length===2`);
+await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-document').length===2`);
+assert.ok(documentQueries.some(q=>q.context==='/work/customer-foo/ops/snow-12345' && q.treeNameOrTreeId==='context' && q.allOf==='data/schema/note'));
 await click('.tb-label input[type="checkbox"]');
 await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Email')).click()`);
 await waitFor(`document.querySelectorAll('.cw-tab').length===3 && document.querySelector('[aria-label="Email canvas"]')`);
@@ -128,10 +134,15 @@ await click('[aria-label="Close Emails tab"]');
 await waitFor(`document.querySelectorAll('.cw-window').length===2`);
 await click('[aria-label="Close Notes tab"]');
 await waitFor(`document.querySelectorAll('.cw-window').length===1`);
-await fill('[aria-label="Search this canvas"]','latency');
-await waitFor(`document.querySelectorAll('.cw-document').length===3`);
-await fill('[aria-label="Search this canvas"]','');
-await waitFor(`document.querySelectorAll('.cw-document').length===6`);
+// Search filters a schema canvas; the fixture answers `q` with a substring match.
+await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Messages')).click()`);
+await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-document').length===2`);
+await fill('input[aria-label="Search this canvas"]','rollback');
+await waitFor(`document.querySelectorAll('.cw-document').length===1`);
+await fill('input[aria-label="Search this canvas"]','');
+await waitFor(`document.querySelectorAll('.cw-document').length===2`);
+await click('[aria-label="Close Messages tab"]');
+await waitFor(`document.querySelectorAll('.cw-window').length===1`);
 // Immediate controls do not need network or native IPC. Observe a paint after
 // the click; this is browser scheduling, not a native end-to-end latency claim.
 const timings=[];
@@ -156,8 +167,8 @@ await cmd('Emulation.clearDeviceMetricsOverride');
 await cmd('Page.navigate',{url:'http://127.0.0.1:1430/workspaces'});
 await waitFor(`document.body.innerText.includes('Universe') && document.querySelector('.desktop-return')`);
 assert.equal(await evaluate('localStorage.getItem("authToken")'),'canvas-test-token');
-console.log('PASS: desktop login, contextual queries, tabs, detach, per-path restoration, reload, search, layout settings, narrow toolbox and shared web handoff.');
+console.log('PASS: desktop login, web UI canvas page, contextual queries, tabs, detach, per-path restoration, reload, search, layout settings, narrow toolbox and shared web handoff.');
 console.log('Toolbox click → next animation frame (browser only), ms:', timings.map(t=>t.toFixed(1)).join(', '));
 console.log('Initial desktop JS:', jsResources.join(', '));
 ws.close();
-}finally{chrome.kill();server.close();apiServer.close();}
+}catch(error){console.error(error);if(pageErrors.length)console.error('PAGE ERRORS:\n'+pageErrors.slice(-12).join('\n---\n'));process.exitCode=1;}finally{chrome.kill();server.close();apiServer.close();}

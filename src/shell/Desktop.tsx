@@ -148,7 +148,7 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
   const frame = surface === 'canvas' ? layout?.frames.find(frame => frame.id === query.get('frame')) : undefined;
   const visibleFrames = layout?.arrangement === 'focus' ? layout.frames.filter(frame => frame.id === layout.focused) : layout?.frames || [];
   return <div className={`ds-root ds-surface-${surface} ${native ? 'ds-native' : 'ds-preview'} ds-menu-${state.menu} ds-placement-${state.placement} ${state.toolbox.open ? 'ds-toolbox-open' : ''}`} style={{ '--ds-gap': `${state.gap}px` } as CSSProperties} onClickCapture={event => {
-    if (!native) return;
+    if (!native || (event.target as Element).closest('.cw-web')) return;
     const link = (event.target as Element).closest('a[href^="/"]');
     if (link) { event.preventDefault(); void invoke('desktop_open_web', { path: link.getAttribute('href') }).catch(report); }
   }}>

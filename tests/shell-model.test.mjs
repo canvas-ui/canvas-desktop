@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, navigate, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu, openTab, patchTab, browserCanvas } from '../src/shell/model.ts';
+import { initialState, navigate, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu, openTab, patchTab, browserCanvas, webCanvas, webTitle, routeScope, documentLocation } from '../src/shell/model.ts';
 
 const incident = { mode: 'explorer', workspace: 'universe', tree: 'context', treeType: 'context', path: '/work/customer-foo/ops/snow-12345' };
 test('path changes restore independent windows and tabs without mutating the previous layout', () => {
@@ -73,4 +73,25 @@ test('links open as a tab of their frame by default and beside it with shift', (
   assert.equal(renamed.frames[1].tabs[0].title, 'Example Domain');
   assert.equal(layout.frames[1].tabs[0].title, 'example.org', 'patching never mutates the previous layout');
   assert.deepEqual(parseState(JSON.stringify({ ...navigate(initialState(), incident), layouts: { [scopeKey(incident)]: renamed } })).layouts[scopeKey(incident)], renamed);
+});
+
+test('web UI routes become tabs with readable titles and tree paths map back to desktop scopes', () => {
+  assert.equal(webTitle('/'), 'Desk');
+  assert.equal(webTitle('/home'), 'Home');
+  assert.equal(webTitle('/workspaces/universe/trees/context/path/work/customer-foo?x=1'), 'customer-foo');
+  assert.equal(webTitle('/workspaces/universe/documents/42'), 'Document');
+  assert.equal(webTitle('/api-tokens'), 'Api tokens');
+  assert.equal(documentLocation('universe', 42), '/workspaces/universe/documents/42');
+  const treeType = tree => tree === 'context' ? 'context' : 'directory';
+  assert.deepEqual(routeScope('/workspaces/universe/trees/context/path/work/customer-foo', treeType), { mode: 'explorer', workspace: 'universe', tree: 'context', treeType: 'context', path: '/work/customer-foo' });
+  assert.deepEqual(routeScope('/workspaces/universe/trees/projects', treeType), { mode: 'explorer', workspace: 'universe', tree: 'projects', treeType: 'directory', path: '/' });
+  assert.deepEqual(routeScope('/workspaces/universe', treeType).path, '/');
+  assert.equal(routeScope('/workspaces/universe/documents/42', treeType), undefined);
+  assert.equal(routeScope('/workspaces/universe/settings', treeType), undefined);
+  assert.equal(routeScope('/agents', treeType), undefined);
+  const tab = webCanvas('/workspaces/universe/documents/42', 'Incident notes');
+  assert.equal(tab.kind, 'web');
+  let state = navigate(initialState(), incident);
+  state = updateLayout(state, scopeKey(incident), layout => openTab(layout, tab));
+  assert.deepEqual(parseState(JSON.stringify(state)), state);
 });

@@ -30,6 +30,14 @@ the canvas** as a new tiled window. Each page runs in its own native webview
 below the canvas chrome, with no Canvas credentials or IPC, and reports its title
 and address back to the tab strip. `target=_blank` becomes another tab.
 
+The default canvas of a path is the web UI's own canvas page for that path,
+rendered inside the window through an in-memory router (the webui's strip
+trick): the address bar, document list, layer widgets, renderers and editors
+come along unchanged. Navigating to another tree path inside it switches the
+desktop context; any other route (a document, settings, agents) turns the tab
+into a *web tab* with its own location and back stack. "Open to the side" from
+any webui list opens a desktop tab, or a new window on shift.
+
 `pnpm dev` also provides a browser preview at `http://localhost:1420`. In this
 preview, native windows are represented as panels in one desktop. It uses the
 same components, state, and real server queries. Test data is only provided by

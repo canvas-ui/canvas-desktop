@@ -46,6 +46,35 @@ export function browserCanvas(url = '', title?: string): Canvas {
   if (!name && url) { try { name = new URL(url).host.replace(/^www\./, '') || url; } catch { name = url; } }
   return { ...newCanvas('browser'), url, title: name || 'New tab' };
 }
+/// A web UI route as a canvas tab.
+export function webCanvas(location: string, title = webTitle(location)): Canvas {
+  return { ...newCanvas('web'), location, title };
+}
+/** A readable tab title for a web UI location. */
+export function webTitle(location: string): string {
+  const pathname = location.split(/[?#]/)[0];
+  const segments = pathname.split('/').filter(Boolean).map(segment => { try { return decodeURIComponent(segment); } catch { return segment; } });
+  if (!segments.length) return 'Desk';
+  if (segments[0] === 'home') return 'Home';
+  if (segments[0] === 'workspaces' && segments.length === 1) return 'Workspaces';
+  if (segments[0] === 'workspaces' && segments.includes('documents')) return 'Document';
+  if (segments[0] === 'workspaces') return segments[segments.length - 1] === 'path' || segments.length === 2 ? segments[1] : segments[segments.length - 1];
+  return segments[segments.length - 1].replace(/[-_]/g, ' ').replace(/^./, c => c.toUpperCase());
+}
+/** The web UI route of a document, as the webui's document page expects it. */
+export function documentLocation(workspaceId: string, documentId: string | number): string {
+  return `/workspaces/${encodeURIComponent(workspaceId)}/documents/${encodeURIComponent(String(documentId))}`;
+}
+/** A web UI route that is a workspace tree path, if it is one. */
+export function routeScope(location: string, treeType: (tree: string) => string): Scope | undefined {
+  const segments = location.split(/[?#]/)[0].split('/').filter(Boolean).map(segment => { try { return decodeURIComponent(segment); } catch { return segment; } });
+  if (segments[0] !== 'workspaces' || !segments[1] || segments.includes('documents') || segments.includes('settings')) return undefined;
+  const tree = segments[2] === 'trees' && segments[3] ? segments[3] : 'context';
+  const pathStart = segments.indexOf('path');
+  if (segments.length > 2 && segments[2] !== 'trees' && segments[2] !== 'path') return undefined;
+  const path = pathStart >= 0 ? '/' + segments.slice(pathStart + 1).join('/') : '/';
+  return { mode: 'explorer', workspace: segments[1], tree, treeType: treeType(tree), path: normalizePath(path) };
+}
 /// Open a canvas from inside a frame: as a tab of that frame (the default),
 /// or to the side as a new frame right after it (shift+click).
 export function openTab(layout: Layout, canvas: Canvas, options: { frame?: string; side?: boolean } = {}): Layout {
@@ -96,7 +125,7 @@ export function parseState(raw: string | null): DesktopState {
       ids.add(frame.id);
       const tabIds = new Set<string>();
       for (const tab of frame.tabs) {
-        if (!tab || typeof tab.id !== 'string' || tabIds.has(tab.id) || typeof tab.title !== 'string' || !['content', 'emails', 'messages', 'notes', 'files', 'tabs', 'browser'].includes(tab.kind)) throw new Error('Invalid saved canvas tab.');
+        if (!tab || typeof tab.id !== 'string' || tabIds.has(tab.id) || typeof tab.title !== 'string' || !['content', 'emails', 'messages', 'notes', 'files', 'tabs', 'browser', 'web'].includes(tab.kind)) throw new Error('Invalid saved canvas tab.');
         tabIds.add(tab.id);
       }
       if (!tabIds.has(frame.active)) throw new Error('Invalid active canvas tab.');

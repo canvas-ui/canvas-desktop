@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ArrowUpRight, File, FileText, Globe, Layers3, Mail, MessageSquare, Plus, RefreshCw, Search, X, Columns2, ExternalLink, Square } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, ArrowUpRight, File, FileText, Globe, Layers3, Mail, MessageSquare, PanelsTopLeft, Plus, RefreshCw, Search, X, Columns2, ExternalLink, Square } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { documentRoute, record, type Canvas, type CanvasKind } from '../../desktop-state';
-import { browserCanvas, closeTab, detachTab, addCanvas, openTab, patchTab, scopeKey, scopeUrl, updateLayout, type Frame, type Layout } from '../../shell/model';
+import { documentRoute, pathRoute, record, type Canvas, type CanvasKind } from '../../desktop-state';
+import { browserCanvas, closeTab, detachTab, addCanvas, navigate, openTab, patchTab, routeScope, scopeKey, scopeUrl, updateLayout, webCanvas, webTitle, type Frame, type Layout } from '../../shell/model';
 import type { DesktopServices } from '../../shell/integration';
 import { native, windowLabel, pageAction, pageClose, pageHide, pageOpen, pageShow } from '../../shell/native';
 import { ResizeEdges, WindowControls, useWindowChrome } from '../../shell/chrome';
 import './canvas-window.css';
 
-export const canvasIcons = { content: Layers3, notes: FileText, emails: Mail, messages: MessageSquare, files: File, tabs: Globe, browser: Globe };
-export const canvasNames: Record<CanvasKind, string> = { content: 'Everything', notes: 'Notes', emails: 'Email', messages: 'Messages', files: 'Files', tabs: 'Saved tabs', browser: 'Web page' };
+const WebCanvas = lazy(() => import('./WebCanvas'));
+export const canvasIcons = { content: Layers3, notes: FileText, emails: Mail, messages: MessageSquare, files: File, tabs: Globe, browser: Globe, web: PanelsTopLeft };
+export const canvasNames: Record<CanvasKind, string> = { content: 'Canvas', notes: 'Notes', emails: 'Email', messages: 'Messages', files: 'Files', tabs: 'Saved tabs', browser: 'Web page', web: 'Web UI' };
 type Doc = { id: string | number; schema?: string; data?: Record<string, unknown>; updatedAt?: string };
 type PageEvent = { tab: string; url?: string; title?: string; loading?: boolean };
 function text(value: unknown): string { return typeof value === 'string' || typeof value === 'number' ? String(value) : ''; }
@@ -46,6 +47,24 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
   const key = scope ? scopeKey(scope) : '';
   const route = scope ? documentRoute(scope, canvas, offset) : '';
   const lastRoute = useRef('');
+  // Per-tab back stack for the web UI's own back buttons (not persisted).
+  const history = useRef(new Map<string, string[]>());
+  const webLocation = canvas.kind === 'web' ? canvas.location || '/home' : scope ? pathRoute(scope.workspace, scope.tree, scope.path) : '/';
+  /** The web UI navigated inside this tab: tree paths switch the desktop context, anything else stays a web tab. */
+  const webNavigate = (next: string, record = true) => {
+    if (next === webLocation) return;
+    if (record) history.current.set(canvas.id, [...(history.current.get(canvas.id) || []), webLocation].slice(-50));
+    const target = scope && routeScope(next, tree => tree === scope.tree ? scope.treeType : tree === 'context' ? 'context' : 'directory');
+    if (target && canvas.kind === 'content') { try { store.update(old => navigate(old, target)); } catch (e) { report(e); } return; }
+    change(old => patchTab(old, frame.id, canvas.id, { kind: 'web', location: next, title: webTitle(next) }));
+  };
+  const webBack = (delta: number) => {
+    const stack = history.current.get(canvas.id) || [];
+    const previous = stack[stack.length + Math.min(-1, delta)];
+    if (previous === undefined) return;
+    history.current.set(canvas.id, stack.slice(0, stack.length + Math.min(-1, delta)));
+    webNavigate(previous, false);
+  };
   const change = (fn: (layout: Layout) => Layout) => {
     try { store.update(state => updateLayout(state, key, fn)); } catch (e) { report(e); }
   };
@@ -113,7 +132,8 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
   }
   const focused = layout?.focused === frame.id;
   const browser = canvas.kind === 'browser';
-  return <section className={`cw-window ${focused ? 'is-focused' : ''} ${browser ? 'is-browser' : ''}`} aria-label={`${canvasNames[canvas.kind]} canvas`} onPointerDown={() => { if (!focused) change(old => ({ ...old, focused: frame.id })); }} onClickCapture={event => {
+  const web = canvas.kind === 'web' || canvas.kind === 'content';
+  return <section className={`cw-window ${focused ? 'is-focused' : ''} ${browser ? 'is-browser' : ''} ${web ? 'is-web' : ''}`} aria-label={`${canvasNames[canvas.kind]} canvas`} onPointerDown={() => { if (!focused) change(old => ({ ...old, focused: frame.id })); }} onClickCapture={event => {
     // Web links open inside the canvas: a tab here, or beside it with shift.
     const link = (event.target as Element).closest('a[href]');
     const href = link?.getAttribute('href') || '';
@@ -125,7 +145,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
         <div className="cw-tabs" role="tablist" aria-label="Canvas tabs">{frame.tabs.map(tab => {
           const Icon = canvasIcons[tab.kind];
           return <div className={`cw-tab ${tab.id === canvas.id ? 'is-active' : ''}`} key={tab.id}>
-            <button role="tab" aria-selected={tab.id === canvas.id} title={tab.kind === 'browser' ? tab.url || tab.title : undefined} onClick={() => change(old => ({ ...old, frames: old.frames.map(row => row.id === frame.id ? { ...row, active: tab.id } : row) }))}><Icon size={14} className={pageLoading[tab.id] ? 'ds-spin' : ''} /><span>{tab.kind === 'content' ? 'Everything' : tab.title}</span></button>
+            <button role="tab" aria-selected={tab.id === canvas.id} title={tab.kind === 'browser' ? tab.url || tab.title : tab.kind === 'web' ? tab.location : undefined} onClick={() => change(old => ({ ...old, frames: old.frames.map(row => row.id === frame.id ? { ...row, active: tab.id } : row) }))}><Icon size={14} className={pageLoading[tab.id] ? 'ds-spin' : ''} /><span>{tab.kind === 'content' ? scope?.path.split('/').filter(Boolean).slice(-1)[0] || scope?.workspace || 'Canvas' : tab.title}</span></button>
             <button className="cw-close-tab" title={`Close ${tab.title} tab`} aria-label={`Close ${tab.title} tab`} onClick={() => change(old => closeTab(old, frame.id, tab.id))}><X size={12} /></button>
           </div>;
         })}</div>
@@ -139,7 +159,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
         : <div className="cw-location" onPointerDown={chrome.drag}><span className="ds-live-dot" /><span>{scope && scopeUrl(scope)}</span><span className="cw-scope-label">CONTEXT</span></div>}
     </div>
     <div className="cw-content" role="tabpanel">
-      {browser ? canvas.url ? native ? <div className="cw-page-host" aria-label={`Page ${canvas.url}`} /> : <iframe className="cw-page" src={canvas.url} title={canvas.title} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" /> : <div className="cw-empty"><Globe size={36} strokeWidth={1} /><h2>A window to the web</h2><p>Websites open right here, as a tab in this canvas. Hold shift to open one beside it.</p><form onSubmit={event => { event.preventDefault(); const input = normalizeAddress(String(new FormData(event.currentTarget).get('url') || '')); if (input) change(old => patchTab(old, frame.id, canvas.id, browserCanvas(input))); }}><input type="text" name="url" aria-label="Website address" required autoFocus placeholder="example.com" inputMode="url" /><button className="ds-primary">Open <ArrowUpRight size={14} /></button></form></div> : selected ? <article className="cw-detail">
+      {web ? <Suspense fallback={<div className="cw-empty" role="status"><Layers3 size={38} strokeWidth={1} /><p>Opening the canvas…</p></div>}><WebCanvas key={canvas.id} location={webLocation} onNavigate={webNavigate} onBack={webBack} open={(entry, side) => open(webCanvas(entry.location, entry.title), side)} /></Suspense> : browser ? canvas.url ? native ? <div className="cw-page-host" aria-label={`Page ${canvas.url}`} /> : <iframe className="cw-page" src={canvas.url} title={canvas.title} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" /> : <div className="cw-empty"><Globe size={36} strokeWidth={1} /><h2>A window to the web</h2><p>Websites open right here, as a tab in this canvas. Hold shift to open one beside it.</p><form onSubmit={event => { event.preventDefault(); const input = normalizeAddress(String(new FormData(event.currentTarget).get('url') || '')); if (input) change(old => patchTab(old, frame.id, canvas.id, browserCanvas(input))); }}><input type="text" name="url" aria-label="Website address" required autoFocus placeholder="example.com" inputMode="url" /><button className="ds-primary">Open <ArrowUpRight size={14} /></button></form></div> : selected ? <article className="cw-detail">
         <button className="ds-text-button" onClick={() => setSelected(undefined)}><ArrowLeft size={15} /> Back to {canvasNames[canvas.kind].toLowerCase()}</button><span className="cw-eyebrow">{canvasNames[kind(selected)]}</span><h1>{title(selected)}</h1><p className="cw-document-text">{excerpt(selected) || 'This document has no text preview.'}</p>
         {typeof selected.data?.url === 'string' && <button className="ds-text-button" title="Open as a tab · shift opens beside this canvas" onClick={event => open(browserCanvas(selected.data!.url as string, title(selected)), event.shiftKey)}>Open source <ArrowUpRight size={14} /></button>}
       </article> : <>
@@ -152,7 +172,7 @@ export function CanvasWindow({ frame, services }: { frame: Frame; services: Desk
         })}</div> : <div className="cw-empty"><Layers3 size={38} strokeWidth={1} /><h2>A little room to think.</h2><p>{query ? 'Nothing matches this search. Try another phrase.' : 'Notes, files, and conversations linked to this path will appear here.'}</p><a className="ds-text-button" href="/workspaces">Open workspace in the web UI <ArrowUpRight size={14} /></a></div>}
       </>}
     </div>
-    {!browser && <footer className="cw-footer"><span><span className="ds-live-dot" /> {loading ? 'Loading context' : error ? 'Could not load content' : 'Context connected'}</span><span className="cw-pagination"><button disabled={!offset || loading} onClick={() => setOffset(value => Math.max(0, value - 50))}>Previous</button><span>{docs.length ? offset + 1 : 0}–{offset + docs.length}</span><button disabled={docs.length < 50 || loading} onClick={() => setOffset(value => value + 50)}>Next</button></span></footer>}
+    {!browser && !web && <footer className="cw-footer"><span><span className="ds-live-dot" /> {loading ? 'Loading context' : error ? 'Could not load content' : 'Context connected'}</span><span className="cw-pagination"><button disabled={!offset || loading} onClick={() => setOffset(value => Math.max(0, value - 50))}>Previous</button><span>{docs.length ? offset + 1 : 0}–{offset + docs.length}</span><button disabled={docs.length < 50 || loading} onClick={() => setOffset(value => value + 50)}>Next</button></span></footer>}
     {error && browser && <div className="ds-error" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
   </section>;
 }
