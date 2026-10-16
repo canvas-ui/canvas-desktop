@@ -70,6 +70,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            desktop::init();
             tauri::tray::TrayIconBuilder::with_id(fuse::TRAY_ID)
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/tray.png"

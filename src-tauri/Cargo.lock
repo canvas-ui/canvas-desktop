@@ -390,6 +390,7 @@ dependencies = [
  "anyhow",
  "cc",
  "dirs 5.0.1",
+ "gdk",
  "gio",
  "glib",
  "openssl",
@@ -405,6 +406,7 @@ dependencies = [
  "webkit2gtk-sys",
  "webview2-com",
  "windows",
+ "zbus",
 ]
 
 [[package]]

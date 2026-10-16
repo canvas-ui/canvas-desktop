@@ -1,8 +1,11 @@
 //! Local window state, independent of webview timers and the server.
-use super::{monitor_area, place, DesktopState, Rect};
+use super::{
+    kwin::{self, VirtualDesktop},
+    monitor_area, place, window_monitor, DesktopState, Rect,
+};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
@@ -21,6 +24,12 @@ pub(super) struct Geometry {
     work_area: Option<Rect>,
     #[serde(default)]
     scale: Option<f64>,
+    /// KDE virtual desktops the window was on; `Some(vec![])` = all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktops: Option<Vec<VirtualDesktop>>,
+    /// Compositor output name (e.g. DP-6), informational next to `monitor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
 }
 
 #[derive(Default)]
@@ -30,6 +39,8 @@ pub(super) struct GeometryState {
     revision: AtomicU64,
     persisted: AtomicU64,
     writer_running: AtomicBool,
+    dirty: Mutex<BTreeSet<String>>,
+    dirty_running: AtomicBool,
 }
 
 fn path() -> Result<std::path::PathBuf, String> {
@@ -57,22 +68,40 @@ pub(super) fn load(app: &tauri::AppHandle) -> Result<BTreeMap<String, Geometry>,
     Ok(windows.as_ref().unwrap().clone())
 }
 
-pub(super) fn capture(window: &WebviewWindow) -> Result<Geometry, String> {
+/// `None` when the window has no usable placement yet: on KDE that is a
+/// window KWin does not list (not mapped) or one that is minimized.
+pub(super) fn capture(window: &WebviewWindow) -> Result<Option<Geometry>, String> {
     let position = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
-    let monitor = window.current_monitor().map_err(|e| e.to_string())?;
-    Ok(Geometry {
-        rect: Rect {
-            x: position.x,
-            y: position.y,
-            width: size.width,
-            height: size.height,
-        },
+    let mut rect = Rect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let info = kwin::info(window)?;
+    if kwin::managed() {
+        let Some(info) = info.as_ref() else {
+            return Ok(None);
+        };
+        if info.minimized {
+            return Ok(None);
+        }
+        if kwin::wayland_managed() {
+            // GTK reports every Wayland toplevel at 0,0; KWin knows the frame.
+            rect = info.rect;
+        }
+    }
+    let monitor = window_monitor(window, info.as_ref())?;
+    Ok(Some(Geometry {
+        rect,
         monitor: monitor.as_ref().and_then(|m| m.name().cloned()),
         maximized: window.is_maximized().map_err(|e| e.to_string())?,
         work_area: monitor.as_ref().map(monitor_area),
         scale: Some(window.scale_factor().map_err(|e| e.to_string())?),
-    })
+        desktops: info.as_ref().and_then(|i| i.desktops.clone()),
+        output: info.and_then(|i| i.output),
+    }))
 }
 
 pub(super) fn bound_key(app: &tauri::AppHandle, label: &str) -> Option<String> {
@@ -142,7 +171,9 @@ pub(super) fn remember(window: &WebviewWindow) -> Result<(), String> {
         return Ok(());
     }
     // Never hold a state lock while asking the UI thread for native geometry.
-    let next = capture(window)?;
+    let Some(next) = capture(window)? else {
+        return Ok(());
+    };
     if next.rect.width == 0 || next.rect.height == 0 {
         return Ok(());
     }
@@ -165,6 +196,44 @@ pub(super) fn remember(window: &WebviewWindow) -> Result<(), String> {
     drop(bindings);
     schedule_write(app);
     Ok(())
+}
+
+/// Coalesce event-driven captures: on KDE each capture is a bus round trip,
+/// which must not run on the UI thread for every resize step.
+pub(super) fn remember_later(app: &tauri::AppHandle, label: &str) {
+    let state = app.state::<DesktopState>();
+    if let Ok(mut dirty) = state.geometry.dirty.lock() {
+        dirty.insert(label.to_string());
+    }
+    if state.geometry.dirty_running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<DesktopState>();
+        loop {
+            std::thread::sleep(Duration::from_millis(300));
+            let labels: Vec<String> = match state.geometry.dirty.lock() {
+                Ok(mut dirty) => std::mem::take(&mut *dirty).into_iter().collect(),
+                Err(_) => break,
+            };
+            for label in labels {
+                if let Some(window) = app.get_webview_window(&label) {
+                    if let Err(error) = remember(&window) {
+                        report(&app, error);
+                    }
+                }
+            }
+            // Clear the flag under the lock so a concurrent insert is never lost.
+            let Ok(dirty) = state.geometry.dirty.lock() else {
+                break;
+            };
+            if dirty.is_empty() {
+                state.geometry.dirty_running.store(false, Ordering::SeqCst);
+                break;
+            }
+        }
+    });
 }
 
 fn schedule_write(app: &tauri::AppHandle) {
@@ -305,10 +374,30 @@ pub(super) fn restore(
         area,
         ((min.0 * scale) as u32, (min.1 * scale) as u32),
     );
-    window.unmaximize().map_err(|e| e.to_string())?;
-    place(window, rect)?;
-    if saved.maximized {
-        window.maximize().map_err(|e| e.to_string())?;
+    if kwin::wayland_managed() {
+        // Maximize state travels with the frame in one KWin operation.
+        kwin::set_state(window, None, Some(saved.maximized))?;
+        place(window, rect)?;
+    } else {
+        window.unmaximize().map_err(|e| e.to_string())?;
+        place(window, rect)?;
+        if saved.maximized {
+            window.maximize().map_err(|e| e.to_string())?;
+        }
+    }
+    // Put the window back on its virtual desktop(s) when they still exist;
+    // otherwise it stays where the window manager opened it.
+    if kwin::managed() {
+        if let Some(desktops) = saved.desktops.as_ref() {
+            let ids = if desktops.is_empty() {
+                Vec::new()
+            } else {
+                kwin::resolve_desktops(desktops, &kwin::desktops()?)
+            };
+            if desktops.is_empty() || !ids.is_empty() {
+                kwin::set_state(window, Some(ids), None)?;
+            }
+        }
     }
     Ok(())
 }
@@ -333,6 +422,8 @@ mod tests {
                 height: 1080,
             }),
             scale: Some(1.0),
+            desktops: None,
+            output: None,
         }
     }
     #[test]
@@ -371,6 +462,9 @@ mod tests {
     #[test]
     fn original_layout_files_keep_their_physical_bounds() {
         let legacy: Geometry = serde_json::from_value(serde_json::json!({"rect":{"x":100,"y":80,"width":900,"height":700},"monitor":"Display","maximized":false})).unwrap();
+        assert!(legacy.desktops.is_none());
+        // Files written without desktops stay byte-compatible with version 1 readers.
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("desktops"));
         assert_eq!(
             remap(
                 &legacy,
@@ -413,9 +507,12 @@ mod tests {
             scale: Some(2.0),
             monitor: Some("right".into()),
             maximized: true,
+            desktops: None,
+            output: None,
         };
         let merged = merge_normal_bounds(Some(&old), next);
         assert_eq!(merged.monitor.as_deref(), Some("right"));
+        assert!(merged.desktops.is_none());
         assert_eq!(
             merged.rect,
             Rect {

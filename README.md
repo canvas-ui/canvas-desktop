@@ -66,6 +66,16 @@ the toolbox remembers them per path. Expanded and collapsed controls have separa
 bounds, so opening a panel restores its last size. Drag the toolbox by its header
 (or the margin around the collapsed launcher).
 
+On KDE Plasma the shell talks to KWin over the session bus (short KWin scripts,
+`src-tauri/src/desktop/kwin.rs`). Each saved window also records its virtual
+desktop(s) and compositor output; a canvas moved to desktop 6 returns to desktop 6
+when its path is opened again, falling back to the desktop at the same position
+and otherwise staying on the current one. On Wayland, where GTK can neither read
+nor set toplevel positions, placement, tiling and maximize state are applied by
+KWin as well, and re-shown windows get their saved placement back. Set
+`CANVAS_DESKTOP_KWIN=0` to disable the bridge. Other Linux desktops keep native
+placement without virtual desktops.
+
 Rust records native moves/resizes directly and coalesces atomic file writes on a
 background thread. Closing/hiding surfaces captures their final bounds, and quitting
 flushes pending changes. Focus changes, tabs, toolbox toggles and returning to a

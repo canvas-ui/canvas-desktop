@@ -4,7 +4,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 mod geometry;
+#[cfg(target_os = "linux")]
+mod kwin;
+#[cfg(not(target_os = "linux"))]
+#[path = "desktop/kwin_stub.rs"]
+mod kwin;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow};
+
+/// Main-thread setup: detect the display backend before any window work.
+pub fn init() {
+    kwin::init();
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,13 +93,65 @@ fn tile_rect(area: Rect, index: usize, count: usize, grid: bool, gap: u32) -> Re
         height: height.max(1),
     }
 }
+/// Outer position plus client size, physical pixels. On KDE Wayland GTK cannot
+/// position toplevels, so the move is queued for KWin (see `kwin::flush`).
 fn place(window: &WebviewWindow, rect: Rect) -> Result<(), String> {
+    if kwin::wayland_managed() {
+        return kwin::place(window, rect);
+    }
     window
         .set_position(PhysicalPosition::new(rect.x, rect.y))
         .map_err(|e| e.to_string())?;
     window
         .set_size(PhysicalSize::new(rect.width, rect.height))
         .map_err(|e| e.to_string())
+}
+/// The display a window is on. GDK cannot tell on Wayland; KWin's output
+/// origin is matched against monitor positions instead.
+fn window_monitor(
+    window: &WebviewWindow,
+    info: Option<&kwin::Info>,
+) -> Result<Option<tauri::Monitor>, String> {
+    if kwin::wayland_managed() {
+        let fetched;
+        let info = match info {
+            Some(info) => Some(info),
+            None => {
+                fetched = kwin::info(window)?;
+                fetched.as_ref()
+            }
+        };
+        if let Some((x, y)) = info.and_then(|i| i.output_origin) {
+            let monitors = window.available_monitors().map_err(|e| e.to_string())?;
+            if let Some(monitor) = monitors.into_iter().find(|m| {
+                let scale = m.scale_factor();
+                (m.position().x as f64 - x * scale).abs() <= 1.0
+                    && (m.position().y as f64 - y * scale).abs() <= 1.0
+            }) {
+                return Ok(Some(monitor));
+            }
+        }
+    }
+    window.current_monitor().map_err(|e| e.to_string())
+}
+/// Show a window and, where the compositor forgets hidden windows (Wayland),
+/// re-apply its saved placement. Follow with `kwin::flush`.
+fn show_restored(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    key: &str,
+    monitors: &[tauri::Monitor],
+    primary: &tauri::Monitor,
+    min: (f64, f64),
+) -> Result<(), String> {
+    let was_hidden = !window.is_visible().unwrap_or(true);
+    window.show().map_err(|e| e.to_string())?;
+    if was_hidden && kwin::wayland_managed() {
+        if let Some(saved) = geometry::load(app)?.get(key) {
+            geometry::restore(window, saved, monitors, primary, min)?;
+        }
+    }
+    Ok(())
 }
 fn surface_url(surface: &str, scope: &str, id: &str) -> WebviewUrl {
     let mut url = tauri::Url::parse("http://localhost/").unwrap();
@@ -160,6 +222,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                 geometry::remember(&window)?;
             }
             window.hide().map_err(|e| e.to_string())?;
+            kwin::forget(&id);
             // Reuse canvases on return to a recent context, cap dormant webviews.
             if app.webview_windows().len() > request.frames.len() + 10 {
                 window.destroy().map_err(|e| e.to_string())?;
@@ -235,7 +298,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                     .and_then(|old| app.get_webview_window(&label(old, &old.focused)));
                 let monitor = focused
                     .as_ref()
-                    .and_then(|w| w.current_monitor().ok().flatten())
+                    .and_then(|w| window_monitor(w, None).ok().flatten())
                     .unwrap_or(primary.clone());
                 let area = monitor_area(&monitor);
                 let scale = monitor.scale_factor();
@@ -266,11 +329,14 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         if request.arrangement == "focus" && frame.id != request.focused {
             geometry::remember(&window)?;
             window.hide().map_err(|e| e.to_string())?;
+            kwin::forget(&id);
         } else {
-            window.show().map_err(|e| e.to_string())?;
+            show_restored(&app, &window, &id, &monitors, &primary, (320.0, 240.0))?;
         }
         geometry::bind(&window, id)?;
     }
+    // KWin applies queued placement once the shown windows are mapped.
+    let place_error = kwin::flush(&app).err();
     *app.state::<DesktopState>()
         .request
         .lock()
@@ -301,7 +367,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     let focus_window = app.get_webview_window(&label(&request, &request.focused));
     let monitor = focus_window
         .as_ref()
-        .and_then(|window| window.current_monitor().ok().flatten())
+        .and_then(|window| window_monitor(window, None).ok().flatten())
         .unwrap_or(primary);
     let area = monitor_area(&monitor);
     let scale = monitor.scale_factor();
@@ -313,8 +379,9 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     }) * scale) as u32;
     let anchor = focus_window
         .as_ref()
-        .and_then(|window| geometry::capture(window).ok())
-        .map(|g| g.rect);
+        .and_then(|window| geometry::capture(window).ok().flatten());
+    let anchor_desktops = anchor.as_ref().and_then(|g| g.desktops.clone());
+    let anchor = anchor.map(|g| g.rect);
     let x = anchor
         .map(|rect| rect.x + rect.width as i32 + (16.0 * scale) as i32)
         .unwrap_or(area.x + area.width as i32 - width as i32 - 20);
@@ -341,18 +408,24 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                     (60, 60),
                 ),
             )?;
+            // A fresh toolbox follows the focused canvas onto its virtual desktop.
+            if let Some(desktops) = anchor_desktops.filter(|_| kwin::managed()) {
+                let ids: Vec<String> = desktops.into_iter().map(|d| d.id).collect();
+                kwin::set_state(&toolbox, Some(ids), None)?;
+            }
         }
         toolbox.show().map_err(|e| e.to_string())?;
         geometry::bind(&toolbox, toolbox_key)?;
     } else {
-        toolbox.show().map_err(|e| e.to_string())?;
+        show_restored(&app, &toolbox, &toolbox_key, &monitors, &monitor, (60.0, 60.0))?;
     }
+    kwin::flush(&app)?;
     if switched {
         if let Some(window) = focus_window {
             window.set_focus().map_err(|e| e.to_string())?;
         }
     }
-    if let Some(error) = tile_error {
+    if let Some(error) = tile_error.or(place_error) {
         return Err(error);
     }
     Ok(())
@@ -372,6 +445,7 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or("Main menu is unavailable")?;
     let monitors = main.available_monitors().map_err(|e| e.to_string())?;
+    let mut placed = Vec::new();
     for monitor in monitors {
         let mut windows: Vec<_> = request
             .frames
@@ -379,8 +453,7 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
             .filter(|frame| request.arrangement != "focus" || frame.id == request.focused)
             .filter_map(|frame| app.get_webview_window(&label(&request, &frame.id)))
             .filter(|window| {
-                window
-                    .current_monitor()
+                window_monitor(window, None)
                     .ok()
                     .flatten()
                     .is_some_and(|current| current.position() == monitor.position())
@@ -394,8 +467,7 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
         let mut area = monitor_area(&monitor);
         let scale = monitor.scale_factor();
         // Reserve controls only on the display containing the main menu.
-        if main
-            .current_monitor()
+        if window_monitor(&main, None)
             .ok()
             .flatten()
             .is_some_and(|current| current.position() == monitor.position())
@@ -435,8 +507,13 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
             window.unmaximize().map_err(|e| e.to_string())?;
             window.unminimize().map_err(|e| e.to_string())?;
             place(window, rect)?;
-            geometry::remember(window)?;
+            placed.push(window.clone());
         }
+    }
+    // One KWin round trip for every tile, then record the resulting bounds.
+    kwin::flush(&app)?;
+    for window in &placed {
+        geometry::remember(window)?;
     }
     Ok(())
 }
@@ -450,6 +527,7 @@ pub async fn desktop_hide_surfaces(app: tauri::AppHandle) -> Result<(), String> 
         if id.starts_with("canvas-") || id == "toolbox" {
             // Destruction clears rendered private content on logout.
             window.destroy().map_err(|e| e.to_string())?;
+            kwin::forget(&id);
         }
     }
     *app.state::<DesktopState>()
@@ -492,18 +570,39 @@ pub fn restore_active(app: &tauri::AppHandle) {
         .ok()
         .and_then(|request| request.clone());
     if let Some(request) = request {
+        let monitors = app
+            .get_webview_window("main")
+            .and_then(|main| main.available_monitors().ok())
+            .unwrap_or_default();
+        let primary = app
+            .get_webview_window("main")
+            .and_then(|main| main.primary_monitor().ok().flatten())
+            .or_else(|| monitors.first().cloned());
+        let reveal = |window: WebviewWindow, key: &str, min: (f64, f64)| {
+            let _ = window.unminimize();
+            match primary.as_ref() {
+                Some(primary) => {
+                    let _ = show_restored(app, &window, key, &monitors, primary, min);
+                }
+                None => {
+                    let _ = window.show();
+                }
+            }
+        };
         for frame in &request.frames {
             if request.arrangement == "focus" && frame.id != request.focused {
                 continue;
             }
-            if let Some(window) = app.get_webview_window(&label(&request, &frame.id)) {
-                let _ = window.unminimize();
-                let _ = window.show();
+            let id = label(&request, &frame.id);
+            if let Some(window) = app.get_webview_window(&id) {
+                reveal(window, &id, (320.0, 240.0));
             }
         }
         if let Some(toolbox) = app.get_webview_window("toolbox") {
-            let _ = toolbox.unminimize();
-            let _ = toolbox.show();
+            reveal(toolbox, &toolbox_key(&request), (60.0, 60.0));
+        }
+        if let Err(error) = kwin::flush(app) {
+            geometry::report(app, error);
         }
     }
 }
@@ -512,6 +611,7 @@ pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if matches!(event, tauri::WindowEvent::Destroyed) {
         crate::tls::forget_window(window.app_handle(), id);
         geometry::forget(window.app_handle(), id);
+        kwin::forget(id);
     }
     if matches!(
         event,
@@ -520,7 +620,10 @@ pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             | tauri::WindowEvent::ScaleFactorChanged { .. }
             | tauri::WindowEvent::CloseRequested { .. }
     ) {
-        if let Some(webview) = window.app_handle().get_webview_window(id) {
+        if kwin::managed() {
+            // Window events arrive on the UI thread; the KWin round trip must not.
+            geometry::remember_later(window.app_handle(), id);
+        } else if let Some(webview) = window.app_handle().get_webview_window(id) {
             if let Err(error) = geometry::remember(&webview) {
                 geometry::report(window.app_handle(), error);
             }
