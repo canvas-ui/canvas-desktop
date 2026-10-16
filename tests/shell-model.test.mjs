@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, navigate, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu } from '../src/shell/model.ts';
+import { initialState, navigate, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu, openTab, patchTab, browserCanvas } from '../src/shell/model.ts';
 
 const incident = { mode: 'explorer', workspace: 'universe', tree: 'context', treeType: 'context', path: '/work/customer-foo/ops/snow-12345' };
 test('path changes restore independent windows and tabs without mutating the previous layout', () => {
@@ -50,4 +50,27 @@ test('unsupported or corrupt layouts fail without silently resetting saved data'
   const state = navigate(initialState(), incident);
   state.layouts[scopeKey(incident)].frames.push(state.layouts[scopeKey(incident)].frames[0]);
   assert.throws(() => parseState(JSON.stringify(state)));
+});
+
+test('links open as a tab of their frame by default and beside it with shift', () => {
+  let layout = addCanvas(addCanvas(navigate(initialState(), incident).layouts[scopeKey(incident)], 'notes'), 'files');
+  const [first, second, third] = layout.frames.map(frame => frame.id);
+  const page = browserCanvas('https://example.com/docs', undefined);
+  assert.equal(page.kind, 'browser');
+  assert.equal(page.title, 'example.com');
+  layout = openTab(layout, page, { frame: first });
+  assert.equal(layout.frames.length, 3);
+  assert.deepEqual(layout.frames[0].tabs.map(tab => tab.id).slice(-1), [page.id]);
+  assert.equal(layout.frames[0].active, page.id);
+  assert.equal(layout.focused, first, 'opening a tab focuses its frame');
+  const beside = browserCanvas('https://example.org');
+  layout = openTab(layout, beside, { frame: first, side: true });
+  assert.equal(layout.frames.length, 4);
+  assert.equal(layout.frames[1].tabs[0].id, beside.id, 'a side canvas lands right after its source frame');
+  assert.deepEqual(layout.frames.slice(2).map(frame => frame.id), [second, third]);
+  assert.equal(layout.focused, layout.frames[1].id);
+  const renamed = patchTab(layout, layout.frames[1].id, beside.id, { title: 'Example Domain' });
+  assert.equal(renamed.frames[1].tabs[0].title, 'Example Domain');
+  assert.equal(layout.frames[1].tabs[0].title, 'example.org', 'patching never mutates the previous layout');
+  assert.deepEqual(parseState(JSON.stringify({ ...navigate(initialState(), incident), layouts: { [scopeKey(incident)]: renamed } })).layouts[scopeKey(incident)], renamed);
 });

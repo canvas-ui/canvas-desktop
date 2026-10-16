@@ -22,6 +22,14 @@ snapshots, save credentials in layouts, or use an arbitrary display label as a
 path identity. `scopeKey()` deliberately separates workspace, tree, tree type,
 and path. Storage failures are surfaced instead of replacing saved layouts.
 
+Native windows are frameless. A component that owns a window draws its title
+bar with `useWindowChrome` from `shell/chrome.tsx` (drag region, double-click to
+maximize, `WindowControls`, `ResizeEdges`). Canvas tabs open from inside a frame
+with `openTab(layout, canvas, { frame, side })`: a tab by default, a new frame
+right after the source on shift+click. Browser tabs (`kind: 'browser'`) are
+native page webviews below the chrome; the `PageTab` address bar is part of the
+measured chrome so it stays visible when the page is shown.
+
 Use `--ds-*` semantic tokens. Namespace selectors (`mm-`, `cw-`, `tb-`) to keep
 component styles independent. Avoid layout animations on input-critical paths;
 respect reduced motion and preserve accessible labels for UI automation.

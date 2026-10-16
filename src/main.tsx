@@ -1,6 +1,7 @@
 import { StrictMode, lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { scopedStorage, serverUrl } from './web-session';
 import { TlsFields } from './TlsFields';
 import type { ClientTls, Remote } from './backend';
@@ -78,7 +79,7 @@ function Host({ initial, desired, setup, initialError }: { initial?: Connection;
   }
   return <>
     {connection && <Suspense fallback={<div className="desktop-loading">Opening canvas…</div>}>{desktopRoute ? <Desktop url={connection.url} changeServer={() => setSelecting(true)} /> : <WebApp />}</Suspense>}
-    {connection && !desktopRoute && <><a className="desktop-return" href="/">← Desktop</a><button className="desktop-server-switch" title={connection.url} onClick={() => setSelecting(true)}>Server</button></>}
+    {connection && !desktopRoute && <><a className="desktop-return" href="/">← Desktop</a><button className="desktop-server-switch" title={connection.url} onClick={() => setSelecting(true)}>Server</button>{isTauri() && <WebWindowChrome />}</>}
     {selecting && <div className="desktop-connect-backdrop"><form className="desktop-connect" onSubmit={e => { e.preventDefault(); void connect(); }}>
       <h1>Connect to Canvas</h1><p>Choose a server, then sign in using the Canvas login screen.</p>
       {setup && Object.keys(setup.remotes).length > 0 && <label>Saved remote<select value={remote} onChange={e => { setRemote(e.target.value); const entry = setup.remotes[e.target.value]; if (entry) { setUrl(entry.url); setTls(entry.tls); } else setTls(undefined); }}><option value="">Enter a server address</option>{Object.keys(setup.remotes).map(id => <option key={id}>{id}</option>)}</select></label>}
@@ -88,6 +89,14 @@ function Host({ initial, desired, setup, initialError }: { initial?: Connection;
       {connection && <p>Continuing restarts Desktop to reconnect with fresh TLS sessions. Mounts keep running; restart them separately after certificate renewal.</p>}
       {error && <p role="alert">{error}</p>}<button type="submit" disabled={busy}>{busy ? 'Connecting…' : connection ? 'Save and reconnect' : 'Continue'}</button>{connection && <button type="button" onClick={() => setSelecting(false)}>Cancel</button>}
     </form></div>}
+  </>;
+}
+// The frameless main window needs a grip and a close while it shows web routes.
+function WebWindowChrome() {
+  const win = getCurrentWindow();
+  return <>
+    <div className="desktop-drag-strip" title="Drag to move · double-click to maximize" onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); void (event.detail === 2 ? win.toggleMaximize() : win.startDragging()).catch(() => {}); }} />
+    <button className="desktop-window-close" aria-label="Hide window" title="Hide window" onClick={() => void win.hide().catch(() => {})}>×</button>
   </>;
 }
 void start();

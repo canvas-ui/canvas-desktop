@@ -12,7 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{Manager, WebviewWindow};
+use tauri::{Manager, Window};
 
 const PATH: &str = "/com/idncstreams/desktop/kwin";
 const IFACE: &str = "com.idncstreams.desktop.KWin";
@@ -379,7 +379,7 @@ fn invalidate() {
 /// Resolve our window to KWin's id. Windows are matched by pid and caption;
 /// when several share a caption the window briefly carries a unique title.
 /// The match is cached until the window is unmapped.
-fn identify(window: &WebviewWindow, report: &Report) -> Option<String> {
+fn identify(window: &Window, report: &Report) -> Option<String> {
     let label = window.label().to_string();
     // Query the window first: never hold a bridge lock across a main-thread call.
     let title = window.title().ok()?;
@@ -422,7 +422,7 @@ fn identify(window: &WebviewWindow, report: &Report) -> Option<String> {
 }
 
 /// Tell identical captions apart with a momentary unique title.
-fn probe(window: &WebviewWindow, title: &str) -> Option<String> {
+fn probe(window: &Window, title: &str) -> Option<String> {
     let nonce = format!(
         "{title} \u{2063}{}",
         bridge()?.seq.fetch_add(1, Ordering::SeqCst)
@@ -457,7 +457,7 @@ pub(super) fn forget(label: &str) {
 }
 
 /// None when KWin does not (yet) list the window, e.g. before it is mapped.
-pub(super) fn info(window: &WebviewWindow) -> Result<Option<Info>, String> {
+pub(super) fn info(window: &Window) -> Result<Option<Info>, String> {
     if !managed() {
         return Ok(None);
     }
@@ -507,14 +507,14 @@ pub(super) fn resolve_desktops(
     ids
 }
 
-fn queue(window: &WebviewWindow, update: impl FnOnce(&mut Pending)) -> Result<(), String> {
+fn queue(window: &Window, update: impl FnOnce(&mut Pending)) -> Result<(), String> {
     let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
     update(pending.entry(window.label().to_string()).or_default());
     Ok(())
 }
 
 /// Queue a placement: outer position and client size in physical pixels.
-pub(super) fn place(window: &WebviewWindow, rect: Rect) -> Result<(), String> {
+pub(super) fn place(window: &Window, rect: Rect) -> Result<(), String> {
     let scale = window.scale_factor().map_err(|e| e.to_string())?.max(0.01);
     let frame = Frame {
         x: (rect.x as f64 / scale).round() as i32,
@@ -527,7 +527,7 @@ pub(super) fn place(window: &WebviewWindow, rect: Rect) -> Result<(), String> {
 
 /// Queue desktop membership (empty = all desktops) and/or maximized state.
 pub(super) fn set_state(
-    window: &WebviewWindow,
+    window: &Window,
     desktops: Option<Vec<String>>,
     maximized: Option<bool>,
 ) -> Result<(), String> {
@@ -559,7 +559,7 @@ pub(super) fn flush(app: &tauri::AppHandle) -> Result<(), String> {
         let report = report(true)?;
         let labels: Vec<String> = remaining.keys().cloned().collect();
         for label in labels {
-            let Some(window) = app.get_webview_window(&label) else {
+            let Some(window) = app.get_window(&label) else {
                 remaining.remove(&label);
                 continue;
             };

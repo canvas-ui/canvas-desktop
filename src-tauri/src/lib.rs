@@ -37,6 +37,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(tls::TlsState::default())
         .manage(desktop::DesktopState::default())
+        .manage(desktop::urls::UrlState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -57,7 +58,13 @@ pub fn run() {
             desktop::desktop_tile,
             desktop::desktop_hide_surfaces,
             desktop::desktop_reveal_menu,
-            desktop::desktop_open_web
+            desktop::desktop_open_web,
+            desktop::urls::desktop_url_open,
+            desktop::urls::desktop_url_show,
+            desktop::urls::desktop_url_hide,
+            desktop::urls::desktop_url_close,
+            desktop::urls::desktop_url_navigate,
+            desktop::urls::desktop_url_action
         ])
         .on_window_event(|window, event| {
             desktop::window_event(window, event);

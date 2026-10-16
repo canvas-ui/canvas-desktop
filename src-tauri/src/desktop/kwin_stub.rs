@@ -1,7 +1,7 @@
 //! Non-Linux stand-in for the KWin bridge: no virtual desktops, native placement.
 use super::Rect;
 use serde::{Deserialize, Serialize};
-use tauri::WebviewWindow;
+use tauri::Window;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(super) struct VirtualDesktop {
@@ -24,7 +24,7 @@ pub(super) fn wayland_managed() -> bool {
     false
 }
 pub(super) fn forget(_label: &str) {}
-pub(super) fn info(_window: &WebviewWindow) -> Result<Option<Info>, String> {
+pub(super) fn info(_window: &Window) -> Result<Option<Info>, String> {
     Ok(None)
 }
 pub(super) fn desktops() -> Result<Vec<VirtualDesktop>, String> {
@@ -33,11 +33,11 @@ pub(super) fn desktops() -> Result<Vec<VirtualDesktop>, String> {
 pub(super) fn resolve_desktops(_saved: &[VirtualDesktop], _available: &[VirtualDesktop]) -> Vec<String> {
     Vec::new()
 }
-pub(super) fn place(_window: &WebviewWindow, _rect: Rect) -> Result<(), String> {
+pub(super) fn place(_window: &Window, _rect: Rect) -> Result<(), String> {
     Ok(())
 }
 pub(super) fn set_state(
-    _window: &WebviewWindow,
+    _window: &Window,
     _desktops: Option<Vec<String>>,
     _maximized: Option<bool>,
 ) -> Result<(), String> {

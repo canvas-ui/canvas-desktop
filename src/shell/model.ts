@@ -40,6 +40,28 @@ export function addCanvas(layout: Layout, kind: CanvasKind, asTab = false): Layo
   const frame = createFrame(kind);
   return { ...layout, focused: frame.id, frames: [...layout.frames, frame] };
 }
+/// A web page as a canvas tab. Empty url shows the address form.
+export function browserCanvas(url = '', title?: string): Canvas {
+  let name = title || '';
+  if (!name && url) { try { name = new URL(url).host.replace(/^www\./, '') || url; } catch { name = url; } }
+  return { ...newCanvas('browser'), url, title: name || 'New tab' };
+}
+/// Open a canvas from inside a frame: as a tab of that frame (the default),
+/// or to the side as a new frame right after it (shift+click).
+export function openTab(layout: Layout, canvas: Canvas, options: { frame?: string; side?: boolean } = {}): Layout {
+  const sourceId = options.frame && layout.frames.some(frame => frame.id === options.frame) ? options.frame : layout.focused;
+  const index = layout.frames.findIndex(frame => frame.id === sourceId);
+  if (options.side || index < 0) {
+    const frame: Frame = { id: crypto.randomUUID(), tabs: [canvas], active: canvas.id };
+    const frames = [...layout.frames];
+    frames.splice(index < 0 ? frames.length : index + 1, 0, frame);
+    return { ...layout, frames, focused: frame.id };
+  }
+  return { ...layout, focused: sourceId, frames: layout.frames.map(frame => frame.id === sourceId ? { ...frame, tabs: [...frame.tabs, canvas], active: canvas.id } : frame) };
+}
+export function patchTab(layout: Layout, frameId: string, tabId: string, patch: Partial<Canvas>): Layout {
+  return { ...layout, frames: layout.frames.map(frame => frame.id === frameId ? { ...frame, tabs: frame.tabs.map(tab => tab.id === tabId ? { ...tab, ...patch } : tab) } : frame) };
+}
 export function closeTab(layout: Layout, frameId: string, tabId: string): Layout {
   const frames = layout.frames.map(frame => {
     if (frame.id !== frameId) return frame;

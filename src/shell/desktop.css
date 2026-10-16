@@ -6,3 +6,8 @@
 .ds-preview.ds-toolbox-open .ds-stage{right:370px}
 .ds-root{scrollbar-color:#a8af9a transparent;scrollbar-width:thin}.mm-panel,.tb-panel{scrollbar-color:#536147 transparent;scrollbar-width:thin}
 @media(max-width:1150px){.ds-preview.ds-toolbox-open .ds-stage{right:24px}.ds-preview.ds-toolbox-open .tb-container{right:24px}.ds-preview.ds-toolbox-open .tb-panel{max-height:calc(100vh - 110px);overflow:auto}}
+
+/* Frameless windows: the component is the title bar, the edges resize. */
+.ds-window-controls{display:flex;align-items:center;gap:2px;flex-shrink:0}.ds-window-controls .ds-icon-button{width:27px;height:27px}.ds-window-close:hover{background:#b5533a!important;color:#fff!important}
+.ds-edge{position:fixed;z-index:70}.ds-edge-n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}.ds-edge-s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}.ds-edge-e{right:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.ds-edge-w{left:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.ds-edge-ne{top:0;right:0;width:10px;height:10px;cursor:nesw-resize}.ds-edge-sw{bottom:0;left:0;width:10px;height:10px;cursor:nesw-resize}.ds-edge-nw{top:0;left:0;width:10px;height:10px;cursor:nwse-resize}.ds-edge-se{bottom:0;right:0;width:10px;height:10px;cursor:nwse-resize}
+.ds-native .mm-panel>header,.ds-native .mm-rail{user-select:none;-webkit-user-select:none}

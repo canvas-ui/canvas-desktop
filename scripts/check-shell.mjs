@@ -15,6 +15,7 @@ const server=http.createServer(async(req,res)=>{
  try {
  const url=new URL(req.url,'http://localhost');const p=url.pathname;
  res.setHeader('Access-Control-Allow-Origin',req.headers.origin || 'http://127.0.0.1:1430');res.setHeader('Access-Control-Allow-Credentials','true');res.setHeader('Access-Control-Allow-Headers',req.headers['access-control-request-headers'] || '*');res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,PATCH,DELETE,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
+ if(p==='/__fixture'){let body='';for await(const chunk of req)body+=chunk;console.error('FIXTURE REPORT',body);res.end('ok');return;}
  if(p.startsWith('/rest/v2')){apiPorts.push(req.socket.localPort);
  let body='';for await(const chunk of req)body+=chunk;
  const payload=body?JSON.parse(body):{};let value=[];

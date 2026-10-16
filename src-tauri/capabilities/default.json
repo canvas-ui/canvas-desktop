@@ -1,13 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Local Canvas surfaces only; external browser windows are excluded",
-  "windows": [
-    "main", "canvas-*", "toolbox"
-  ],
+  "description": "Local Canvas surfaces only. Page webviews (url-*) and external browser windows get no IPC.",
+  "webviews": ["main", "canvas-*", "toolbox"],
   "permissions": [
     "core:default",
     "opener:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-is-maximized",
+    "core:window:allow-set-focus"
   ]
 }

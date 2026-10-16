@@ -88,10 +88,28 @@ window.addEventListener('DOMContentLoaded', () => {
       await invoke('desktop_test_window_state', { id: maximized, action: 'maximize' });
       await waitFor(async () => (await windows()).some(w => w.id === maximized && w.maximized));
     }
+    // A web page opens as a tab of the focused canvas: a page webview below the chrome of that window.
+    const layoutKey = JSON.stringify([incident.workspace, incident.tree, incident.treeType, incident.path]);
+    const pageWindows = async () => (await windows()).filter(w => (w.webviews || []).some(v => v.startsWith('url-')));
+    ui.dispatch({ type: 'open-url', url: 'http://127.0.0.1:1430/' });
+    await waitFor(async () => (await pageWindows()).length === 1);
+    const pageWindow = (await pageWindows())[0];
+    check(pageWindow.id.startsWith('canvas-') && pageWindow.visible && pageWindow.webviews.length === 2, 'The page webview joins a visible canvas window: ' + JSON.stringify(pageWindow));
+    check(ui.snapshot().layouts[layoutKey].frames.some(f => f.tabs.some(t => t.kind === 'browser' && t.url === 'http://127.0.0.1:1430/')), 'The page is a browser tab of the layout');
+    await sleep(400);
+    await verify(expected, 'Opening a page tab must not move any window');
+    const pageFrame = ui.snapshot().layouts[layoutKey].frames.find(f => f.tabs.some(t => t.kind === 'browser'));
+    ui.dispatch({ type: 'close-tab', frame: pageFrame.id, tab: pageFrame.tabs.find(t => t.kind === 'browser').id });
+    await waitFor(async () => (await pageWindows()).length === 0);
+    check((await windows()).some(w => w.id === pageWindow.id && w.visible), 'Closing the page tab keeps its canvas window');
     // Move just before quitting: ExitRequested must flush without a JS debounce delay.
     expected[0] = { ...firstBounds, x: 495, y: 135, width: 790, height: 545 };
     await move(expected[0]);
     await invoke('desktop_test_result', { result: { ok: true, expected, maximized, windows: await windows(), menuClickToFrameMs: timings } });
   }
-  run().catch(async error => invoke('desktop_test_result', { result: { ok: false, error: String(error), windows: await invoke('desktop_test_snapshot'), body: document.body.innerText } }));
+  run().catch(async error => {
+    // Report through IPC; if IPC itself is broken, the fixture server logs the failure.
+    try { await invoke('desktop_test_result', { result: { ok: false, error: String(error), windows: await invoke('desktop_test_snapshot'), body: document.body.innerText } }); }
+    catch (ipcError) { await fetch('/__fixture', { method: 'POST', body: JSON.stringify({ error: String(error), ipcError: String(ipcError), body: document.body.innerText.slice(0, 2000) }) }).catch(() => {}); }
+  });
 });

@@ -1,4 +1,4 @@
-import { addCanvas, closeTab, navigate, scopeKey, updateLayout, type Scope } from './model';
+import { addCanvas, browserCanvas, closeTab, navigate, openTab, scopeKey, updateLayout, type Scope } from './model';
 import type { DesktopStore } from './store';
 import { kinds, type CanvasKind } from '../desktop-state';
 
@@ -7,6 +7,7 @@ import { kinds, type CanvasKind } from '../desktop-state';
 export type DesktopAction =
   | { type: 'navigate'; scope: Scope }
   | { type: 'open-canvas'; kind: CanvasKind; asTab?: boolean }
+  | { type: 'open-url'; url: string; side?: boolean }
   | { type: 'close-tab'; frame: string; tab: string }
   | { type: 'show-toolbox'; mode: 'context' | 'global' }
   | { type: 'show-menu' };
@@ -27,6 +28,10 @@ export function installAutomation(store: DesktopStore) {
       if (!state.scope) throw new Error('Choose a path first.');
       if (action.type === 'open-canvas' && kinds.includes(action.kind)) return updateLayout(state, scopeKey(state.scope), layout => addCanvas(layout, action.kind, action.asTab));
       if (action.type === 'close-tab') return updateLayout(state, scopeKey(state.scope), layout => closeTab(layout, action.frame, action.tab));
+      if (action.type === 'open-url') {
+        if (typeof action.url !== 'string' || !/^https?:\/\//i.test(action.url)) throw new Error('Open-url needs an http(s) address.');
+        return updateLayout(state, scopeKey(state.scope), layout => openTab(layout, browserCanvas(action.url), { side: !!action.side }));
+      }
       throw new Error('Unsupported desktop action.');
     }),
   };

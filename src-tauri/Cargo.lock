@@ -393,6 +393,7 @@ dependencies = [
  "gdk",
  "gio",
  "glib",
+ "gtk",
  "openssl",
  "serde",
  "serde_json",

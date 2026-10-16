@@ -4,6 +4,7 @@ import { treeBase } from '../../desktop-state';
 import type { Workspace, Tree } from '../../backend';
 import { navigate, normalizePath, scopeUrl, type Scope } from '../../shell/model';
 import type { DesktopServices } from '../../shell/integration';
+import { ResizeEdges, WindowControls, useWindowChrome } from '../../shell/chrome';
 import './main-menu.css';
 
 export function MainMenu(services: DesktopServices) {
@@ -19,6 +20,7 @@ export function MainMenu(services: DesktopServices) {
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const update = (menu: typeof state.menu) => { try { store.update(old => ({ ...old, menu })); } catch (e) { report(e); } };
+  const chrome = useWindowChrome(report, { maximizable: false });
   useEffect(() => {
     let active = true;
     setLoading(true); setError('');
@@ -65,7 +67,8 @@ export function MainMenu(services: DesktopServices) {
   }
   function chooseWorkspace(name: string) { setWorkspace(name); setTree(''); setFilter(''); setCollapsed(new Set()); update('m2'); }
   return <div className={`mm-container mm-${state.placement} ${state.menu === 'hidden' ? 'mm-hidden' : ''}`}>
-    <nav className="mm-rail" aria-label="Main navigation">
+    <ResizeEdges chrome={chrome} />
+    <nav className="mm-rail" aria-label="Main navigation" onPointerDown={chrome.drag}>
       <button className="mm-brand" aria-label="Canvas main menu" title="Canvas" onClick={() => update(state.menu === 'm0' ? 'hidden' : 'm0')}><span /><span /><span /><span /></button>
       <span className="mm-rail-divider" />
       <button className={state.menu === 'm1' ? 'is-active' : ''} aria-label="Workspaces" title="Workspaces" onClick={() => update('m1')}><Grid2X2 size={19} /></button>
@@ -77,7 +80,7 @@ export function MainMenu(services: DesktopServices) {
       <div className="mm-avatar" title={services.account}>{services.account.slice(0, 1).toUpperCase()}</div>
     </nav>
     <aside className="mm-panel" aria-label={state.menu === 'm0' ? 'Canvas menu' : state.menu === 'm1' ? 'Workspaces menu' : 'Context tree'}>
-      <header><div><span className="mm-overline">YOUR SPACE TO THINK</span><h1>canvas<span>.</span></h1></div><button className="ds-icon-button" aria-label="Hide main menu" title="Hide main menu · Esc" onClick={() => update('hidden')}><PanelLeftClose size={17} /></button></header>
+      <header onPointerDown={chrome.drag}><div><span className="mm-overline">YOUR SPACE TO THINK</span><h1>canvas<span>.</span></h1></div><button className="ds-icon-button" aria-label="Hide main menu" title="Hide main menu · Esc" onClick={() => update('hidden')}><PanelLeftClose size={17} /></button><WindowControls chrome={chrome} close="hide" /></header>
       {state.menu === 'm0' ? <div className="mm-page"><div className="mm-section-label">MAKE YOURSELF AT HOME</div><button className="mm-menu-item" onClick={() => update('m1')}><Grid2X2 size={17} /><span>Workspaces<small>Places for your projects</small></span><ChevronRight size={14} /></button><button className="mm-menu-item" onClick={() => { store.update(old => ({ ...old, toolbox: { ...old.toolbox, open: true, page: 'agents' } })); }}><Bot size={17} /><span>Agents<small>A little help, on demand</small></span><ChevronRight size={14} /></button><a className="mm-menu-item" href="/contexts"><Layers3 size={17} /><span>Contexts<small>Manage saved contexts</small></span><ArrowUpRight size={14} /></a><a className="mm-menu-item" href="/workspaces"><ArrowUpRight size={17} /><span>Open full web UI</span></a><button className="mm-menu-item" onClick={services.settings}><Settings2 size={17} /><span>Personalize desktop</span></button><button className="mm-menu-item" onClick={services.changeServer}><HardDrive size={17} /><span>Change server</span></button><button className="mm-menu-item" onClick={services.logout}><LogOut size={17} /><span>Log out</span></button></div> : state.menu === 'm1' ? <div className="mm-page"><div className="mm-section-label">WORKSPACES <span>{workspaces.length.toString().padStart(2, '0')}</span></div><p className="mm-description">Pick a place. Everything follows.</p>{workspaces.map((row, i) => <button key={row.name} className={`mm-workspace ${row.name === workspace ? 'is-active' : ''}`} onClick={() => chooseWorkspace(row.name)}><span className={`mm-workspace-symbol mm-symbol-${i % 3}`}><Grid2X2 size={18} /></span><span><strong>{row.label || row.name}</strong><small>{row.name}://</small></span><ChevronRight size={15} /></button>)}{!loading && !workspaces.length && !error && <p className="mm-description">No workspaces yet. <a href="/workspaces">Create one in the web UI.</a></p>}</div> : <>
         <div className="mm-workspace-heading"><button className="ds-icon-button" aria-label="Back to workspaces" onClick={() => update('m1')}><ArrowLeft size={15} /></button><strong>{workspaces.find(row => row.name === workspace)?.label || workspace || 'Your workspace'}</strong><span className="ds-live-dot" /></div>
         <div className="mm-tree-select"><label htmlFor="desktop-tree">BROWSE</label><select id="desktop-tree" aria-label="Workspace tree" value={tree} onChange={event => { setTree(event.target.value); setCollapsed(new Set()); }}>{trees.map(row => <option value={row.name} key={row.name}>{row.label || row.name}</option>)}</select></div>

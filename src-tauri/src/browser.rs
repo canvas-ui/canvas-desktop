@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 static NEXT_BROWSER: AtomicU64 = AtomicU64::new(1);
-fn browser_url(value: &str) -> Result<tauri::Url, String> {
+pub(crate) fn browser_url(value: &str) -> Result<tauri::Url, String> {
     let url = tauri::Url::parse(value).map_err(|e| e.to_string())?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err("Browser addresses must use HTTP or HTTPS".into());
@@ -26,7 +26,7 @@ pub fn open_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
     .build()
     .map_err(|e| e.to_string())?;
-    crate::tls::install(&window)?;
+    crate::tls::install(window.as_ref())?;
     window.navigate(url).map_err(|e| e.to_string())?;
     Ok(())
 }

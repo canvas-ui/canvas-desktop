@@ -1,8 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { scopeKey, type DesktopState } from './model';
 
 export const native = isTauri();
 export const surface = new URLSearchParams(location.search).get('surface') || 'desktop';
+// The host webview shares its label with its window; page webviews hang below it.
+export const windowLabel = native ? getCurrentWindow().label : '';
 let pending = Promise.resolve();
 let revision = 0;
 export function syncWindows(state: DesktopState, namespace: string) {
@@ -17,3 +20,12 @@ export function syncWindows(state: DesktopState, namespace: string) {
 }
 export const tileWindows = () => native ? invoke('desktop_tile') : Promise.resolve();
 export const stopWindows = () => native ? invoke('desktop_hide_surfaces') : Promise.resolve();
+
+// Web pages inside a canvas: one native page webview per URL tab.
+const page = (command: string, args: Record<string, unknown>) => native ? invoke(command, args) : Promise.resolve();
+export const pageOpen = (window: string, tab: string, url: string, chrome: number) => page('desktop_url_open', { window, tab, url, chrome });
+export const pageShow = (window: string, tab: string, chrome: number) => page('desktop_url_show', { window, tab, chrome });
+export const pageHide = (window: string, tab: string) => page('desktop_url_hide', { window, tab });
+export const pageClose = (window: string, tab: string) => page('desktop_url_close', { window, tab });
+export const pageNavigate = (window: string, tab: string, url: string) => page('desktop_url_navigate', { window, tab, url });
+export const pageAction = (window: string, tab: string, action: 'back' | 'forward' | 'reload' | 'stop') => page('desktop_url_action', { window, tab, action });

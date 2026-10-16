@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "toolbox",
-  "description": "Move the local toolbox using its header or launcher margin",
-  "windows": ["toolbox"],
-  "permissions": ["core:window:allow-start-dragging"]
-}

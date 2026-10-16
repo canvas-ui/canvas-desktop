@@ -12,7 +12,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
-use tauri::{Manager, WebviewWindow};
+use tauri::Manager;
 
 #[derive(Default)]
 pub struct TlsState {
@@ -92,13 +92,14 @@ pub async fn activate_tls(
     }
     drop(identities);
     install(
-        &app.get_webview_window("main")
-            .ok_or("Main window unavailable")?,
+        app.get_webview_window("main")
+            .ok_or("Main window unavailable")?
+            .as_ref(),
     )?;
     Ok(result)
 }
 
-pub fn install(window: &WebviewWindow) -> Result<(), String> {
+pub fn install(window: &tauri::Webview) -> Result<(), String> {
     let state = window.state::<TlsState>();
     let mut installed = state.installed.lock().map_err(|e| e.to_string())?;
     if installed.contains(window.label()) {

@@ -22,6 +22,14 @@ and the toolbox has its own launcher window beside it. Closing the main menu
 keeps the tray running. The tray provides menu, mounts, minimize all, settings,
 logout, restart UI, and quit controls.
 
+Every native window is frameless: the canvas tab strip is its title bar (drag it,
+double-click to maximize, window buttons on the right, invisible resize handles
+along the edges). Web pages open *inside* a canvas: a link, a saved tab or the
+globe button opens a tab in that canvas by default; **shift+click opens it beside
+the canvas** as a new tiled window. Each page runs in its own native webview
+below the canvas chrome, with no Canvas credentials or IPC, and reports its title
+and address back to the tab strip. `target=_blank` becomes another tab.
+
 `pnpm dev` also provides a browser preview at `http://localhost:1420`. In this
 preview, native windows are represented as panels in one desktop. It uses the
 same components, state, and real server queries. Test data is only provided by
@@ -87,7 +95,12 @@ Existing version-1 layout files remain readable.
 
 Components live under `src/components/{main-menu,canvas-window,toolbox,settings}`.
 Each owns its view and stylesheet. The host/state contract is
-`src/shell/integration.ts`; pure layout operations are in `src/shell/model.ts`.
+`src/shell/integration.ts`; pure layout operations are in `src/shell/model.ts`;
+frameless window chrome (drag, resize edges, window buttons) is `src/shell/chrome.tsx`.
+Page webviews are managed by `src-tauri/src/desktop/urls.rs`; on Linux the window's
+vertical GTK box splits chrome and page, elsewhere the page is placed by bounds.
+Capabilities are granted per webview label (`main`, `canvas-*`, `toolbox`), so page
+webviews (`url-*`) never reach the IPC layer.
 See [component integration](src/components/README.md) for extension details.
 
 `window.__CANVAS_DESKTOP_UI__` exposes a versioned, transport-independent

@@ -12,7 +12,7 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{Emitter, Manager, WebviewWindow};
+use tauri::{Emitter, Manager, Window};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(super) struct Geometry {
@@ -70,7 +70,7 @@ pub(super) fn load(app: &tauri::AppHandle) -> Result<BTreeMap<String, Geometry>,
 
 /// `None` when the window has no usable placement yet: on KDE that is a
 /// window KWin does not list (not mapped) or one that is minimized.
-pub(super) fn capture(window: &WebviewWindow) -> Result<Option<Geometry>, String> {
+pub(super) fn capture(window: &Window) -> Result<Option<Geometry>, String> {
     let position = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let mut rect = Rect {
@@ -114,7 +114,7 @@ pub(super) fn bound_key(app: &tauri::AppHandle, label: &str) -> Option<String> {
         .cloned()
 }
 
-pub(super) fn bind(window: &WebviewWindow, key: String) -> Result<(), String> {
+pub(super) fn bind(window: &Window, key: String) -> Result<(), String> {
     window
         .app_handle()
         .state::<DesktopState>()
@@ -126,7 +126,7 @@ pub(super) fn bind(window: &WebviewWindow, key: String) -> Result<(), String> {
     remember(window)
 }
 
-pub(super) fn unbind(window: &WebviewWindow) -> Result<(), String> {
+pub(super) fn unbind(window: &Window) -> Result<(), String> {
     remember(window)?;
     forget(window.app_handle(), window.label());
     Ok(())
@@ -158,7 +158,7 @@ fn merge_normal_bounds(old: Option<&Geometry>, next: Geometry) -> Geometry {
     next
 }
 
-pub(super) fn remember(window: &WebviewWindow) -> Result<(), String> {
+pub(super) fn remember(window: &Window) -> Result<(), String> {
     let app = window.app_handle();
     let Some(key) = bound_key(app, window.label()) else {
         return Ok(());
@@ -218,7 +218,7 @@ pub(super) fn remember_later(app: &tauri::AppHandle, label: &str) {
                 Err(_) => break,
             };
             for label in labels {
-                if let Some(window) = app.get_webview_window(&label) {
+                if let Some(window) = app.get_window(&label) {
                     if let Err(error) = remember(&window) {
                         report(&app, error);
                     }
@@ -294,7 +294,7 @@ fn flush(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub(super) fn save_all(app: &tauri::AppHandle) -> Result<(), String> {
-    for window in app.webview_windows().values() {
+    for window in app.windows().values() {
         remember(window)?;
     }
     flush(app)
@@ -343,7 +343,7 @@ pub(super) fn fit(rect: Rect, area: Rect, min: (u32, u32)) -> Rect {
 }
 
 pub(super) fn restore(
-    window: &WebviewWindow,
+    window: &Window,
     saved: &Geometry,
     monitors: &[tauri::Monitor],
     primary: &tauri::Monitor,

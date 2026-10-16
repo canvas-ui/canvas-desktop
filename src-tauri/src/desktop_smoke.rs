@@ -3,10 +3,12 @@
 use tauri::Manager;
 #[tauri::command]
 fn desktop_test_snapshot(app: tauri::AppHandle) -> serde_json::Value {
-    serde_json::json!(app.webview_windows().iter().map(|(id, window)| {
+    // Windows, not webview windows: a canvas with a page tab hosts two webviews.
+    serde_json::json!(app.windows().iter().map(|(id, window)| {
         let position = window.outer_position().ok();
         let size = window.inner_size().ok();
-        serde_json::json!({ "id": id, "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height) })
+        let webviews: Vec<String> = window.webviews().iter().map(|w| w.label().to_string()).collect();
+        serde_json::json!({ "id": id, "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height), "webviews": webviews })
     }).collect::<Vec<_>>())
 }
 #[tauri::command]
@@ -15,9 +17,7 @@ async fn desktop_test_window_state(
     id: String,
     action: String,
 ) -> Result<(), String> {
-    let window = app
-        .get_webview_window(&id)
-        .ok_or("Fixture window is missing")?;
+    let window = app.get_window(&id).ok_or("Fixture window is missing")?;
     match action.as_str() {
         "maximize" => window.maximize(),
         "unmaximize" => window.unmaximize(),
@@ -36,9 +36,7 @@ async fn desktop_test_place(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let window = app
-        .get_webview_window(&id)
-        .ok_or("Fixture window is missing")?;
+    let window = app.get_window(&id).ok_or("Fixture window is missing")?;
     window
         .set_position(tauri::PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
@@ -61,11 +59,15 @@ pub fn run() {
     tauri::Builder::default()
         .manage(crate::tls::TlsState::default())
         .manage(crate::desktop::DesktopState::default())
+        .manage(crate::desktop::urls::UrlState::default())
         .invoke_handler(tauri::generate_handler![
             crate::config::load_remotes, crate::tls::activate_tls,
             crate::desktop::desktop_sync, crate::desktop::desktop_tile,
             crate::desktop::desktop_hide_surfaces,
-            crate::desktop::desktop_reveal_menu, desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_result
+            crate::desktop::desktop_reveal_menu,
+            crate::desktop::urls::desktop_url_open, crate::desktop::urls::desktop_url_show, crate::desktop::urls::desktop_url_hide,
+            crate::desktop::urls::desktop_url_close, crate::desktop::urls::desktop_url_navigate, crate::desktop::urls::desktop_url_action,
+            desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_result
         ])
         .on_window_event(crate::desktop::window_event)
         .setup(move |app| {

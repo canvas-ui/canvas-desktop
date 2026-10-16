@@ -18,6 +18,7 @@
         "height": 900,
         "center": true,
         "resizable": true,
+        "decorations": false,
         "visible": true
       }
     ],
