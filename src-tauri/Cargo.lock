@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-desktop"
-version = "0.4.54"
+version = "0.4.55"
 dependencies = [
  "anyhow",
  "cc",
