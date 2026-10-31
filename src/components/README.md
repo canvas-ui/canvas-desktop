@@ -4,8 +4,7 @@ Each component folder owns its React view and CSS. Import only the shared
 `DesktopServices` contract from `shell/integration.ts`, pure operations from
 `shell/model.ts`, and the shared content primitives you actually need.
 
-`MainMenu` renders M0/M1/M2 in either a left or top placement. It loads workspace
-navigation but does not create native windows. `CanvasWindow` owns tabs and
+`MainMenu` renders M0/M1/M2 in either a left or top placement. It hosts the web UI rail, section lists and entity trees and does not create native windows. `CanvasWindow` owns tabs and
 contextual content rendering. `Toolbox` owns global/context applets and dispatches
 layout operations. `Settings` modifies presentation preferences. `shell/Desktop`
 selects the surface, owns authentication, live events, shortcuts and the store;
@@ -20,7 +19,7 @@ The descriptor list is an extension catalog, not a dynamic plugin loader.
 Use `store.update(previous => next)` with the pure model operations. Never mutate
 snapshots, save credentials in layouts, or use an arbitrary display label as a
 path identity. `scopeKey()` deliberately separates workspace, tree, tree type,
-and path. Storage failures are surfaced instead of replacing saved layouts.
+and path. Native window identity uses the frame ID so pins can move between paths without replacing a window. Storage failures are surfaced instead of replacing saved layouts.
 
 Native windows are frameless. A component that owns a window draws its title
 bar with `useWindowChrome` from `shell/chrome.tsx` (drag region, double-click to

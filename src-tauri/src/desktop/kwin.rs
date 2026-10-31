@@ -12,7 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{Manager, Window};
+use tauri::{Emitter, Manager, Window};
 
 const PATH: &str = "/com/idncstreams/desktop/kwin";
 const IFACE: &str = "com.idncstreams.desktop.KWin";
@@ -96,6 +96,19 @@ struct Receiver {
 }
 #[zbus::interface(name = "com.idncstreams.desktop.KWin")]
 impl Receiver {
+    fn action(&self, action: String) {
+        if !["m0", "m1", "m2", "cycle-menu"].contains(&action.as_str()) {
+            return;
+        }
+        if let Some(app) = APP.get() {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let _ = crate::open_main_ui(&app, false);
+                let _ = app.emit_to("main", "desktop:action", action);
+            });
+        }
+    }
+
     fn report(&self, token: String, payload: String) {
         let (lock, ready) = &*self.results;
         if let Ok(mut results) = lock.lock() {
@@ -112,6 +125,8 @@ struct Bridge {
     run: Mutex<()>,
     seq: AtomicU64,
 }
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+const SHORTCUT_PLUGIN: &str = "canvas-desktop-navigation";
 static BRIDGE: OnceLock<Option<Bridge>> = OnceLock::new();
 static WAYLAND: OnceLock<bool> = OnceLock::new();
 static IDS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
@@ -166,10 +181,7 @@ fn connect() -> Result<Bridge, String> {
             },
         )
         .map_err(|e| e.to_string())?;
-    let service = conn
-        .unique_name()
-        .ok_or("no unique bus name")?
-        .to_string();
+    let service = conn.unique_name().ok_or("no unique bus name")?.to_string();
     Ok(Bridge {
         conn,
         service,
@@ -209,13 +221,23 @@ fn script_dir() -> std::path::PathBuf {
 }
 
 fn run_script(bridge: &Bridge, body: &str) -> Result<String, String> {
+    execute_script(bridge, body, false)
+}
+fn execute_script(bridge: &Bridge, body: &str, persistent: bool) -> Result<String, String> {
     let _serial = bridge.run.lock().map_err(|e| e.to_string())?;
     let token = format!(
         "{}-{}",
         std::process::id(),
         bridge.seq.fetch_add(1, Ordering::SeqCst)
     );
-    let plugin = format!("canvas-desktop-{token}");
+    let plugin = if persistent {
+        SHORTCUT_PLUGIN.to_string()
+    } else {
+        format!("canvas-desktop-{token}")
+    };
+    if persistent {
+        unload(bridge, &plugin);
+    }
     let path = script_dir().join(format!("{plugin}.js"));
     let report = format!(
         "callDBus({}, {}, {}, \"Report\", {}, ",
@@ -263,19 +285,55 @@ fn run_script(bridge: &Bridge, body: &str) -> Result<String, String> {
         let (lock, ready) = &*bridge.results;
         let guard = lock.lock().map_err(|e| e.to_string())?;
         let (mut results, _) = ready
-            .wait_timeout_while(guard, SCRIPT_TIMEOUT, |results| !results.contains_key(&token))
+            .wait_timeout_while(guard, SCRIPT_TIMEOUT, |results| {
+                !results.contains_key(&token)
+            })
             .map_err(|e| e.to_string())?;
         results
             .remove(&token)
             .ok_or_else(|| "KWin script did not report back".to_string())
     })();
-    unload(bridge, &plugin);
+    if !persistent || result.is_err() {
+        unload(bridge, &plugin);
+    }
     let _ = std::fs::remove_file(&path);
     let payload = result?;
     if let Ok(Failure { error: Some(error) }) = serde_json::from_str::<Failure>(&payload) {
         return Err(format!("KWin script failed: {error}"));
     }
     Ok(payload)
+}
+
+/// KWin owns global shortcuts on both Plasma X11 and Wayland.
+/// Defaults can be reassigned in System Settings → Shortcuts → KWin.
+pub(super) fn install_shortcuts(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = APP.set(app);
+    let Some(bridge) = bridge() else {
+        return Ok(());
+    };
+    let script = r#"
+      try {
+        const actions = [["m0", "0"], ["m1", "1"], ["m2", "2"], ["cycle-menu", "Left"]];
+        for (const a of actions) {
+          if (!registerShortcut("Canvas-" + a[0], "Canvas " + a[0], "Ctrl+Alt+" + a[1], function () {
+            callDBus(__SERVICE__, __PATH__, __IFACE__, "Action", a[0]);
+          })) throw new Error("Cannot register Canvas " + a[0]);
+        }
+        __REPORT__(JSON.stringify({ok:true}));
+      } catch (e) { __REPORT__(JSON.stringify({error:String(e)})); }
+    "#.replace("__SERVICE__", &serde_json::json!(bridge.service).to_string())
+      .replace("__PATH__", &serde_json::json!(PATH).to_string())
+      .replace("__IFACE__", &serde_json::json!(IFACE).to_string());
+    let result = execute_script(bridge, &script, true);
+    if result.is_err() {
+        unload(bridge, SHORTCUT_PLUGIN);
+    }
+    result.map(|_| ())
+}
+pub(super) fn remove_shortcuts() {
+    if let Some(Some(bridge)) = BRIDGE.get() {
+        unload(bridge, SHORTCUT_PLUGIN);
+    }
 }
 
 fn unload(bridge: &Bridge, plugin: &str) {
@@ -404,9 +462,7 @@ fn identify(window: &Window, report: &Report) -> Option<String> {
             .collect();
         if let Some((width, height)) = size {
             candidates.sort_by(|a, b| {
-                let d = |w: &WindowInfo| {
-                    (w.client[2] - width).abs() + (w.client[3] - height).abs()
-                };
+                let d = |w: &WindowInfo| (w.client[2] - width).abs() + (w.client[3] - height).abs();
                 d(a).total_cmp(&d(b))
             });
         }
@@ -586,10 +642,7 @@ pub(super) fn flush(app: &tauri::AppHandle) -> Result<(), String> {
     if ops.is_empty() {
         return Ok(());
     }
-    let ops: Vec<Op> = ops
-        .iter()
-        .map(|(id, pending)| Op { id, pending })
-        .collect();
+    let ops: Vec<Op> = ops.iter().map(|(id, pending)| Op { id, pending }).collect();
     let script = APPLY_SCRIPT.replace(
         "__OPS__",
         &serde_json::to_string(&ops).map_err(|e| e.to_string())?,

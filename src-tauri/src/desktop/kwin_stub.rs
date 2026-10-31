@@ -30,7 +30,10 @@ pub(super) fn info(_window: &Window) -> Result<Option<Info>, String> {
 pub(super) fn desktops() -> Result<Vec<VirtualDesktop>, String> {
     Ok(Vec::new())
 }
-pub(super) fn resolve_desktops(_saved: &[VirtualDesktop], _available: &[VirtualDesktop]) -> Vec<String> {
+pub(super) fn resolve_desktops(
+    _saved: &[VirtualDesktop],
+    _available: &[VirtualDesktop],
+) -> Vec<String> {
     Vec::new()
 }
 pub(super) fn place(_window: &Window, _rect: Rect) -> Result<(), String> {
@@ -46,3 +49,8 @@ pub(super) fn set_state(
 pub(super) fn flush(_app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
+
+pub(super) fn install_shortcuts(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+pub(super) fn remove_shortcuts() {}

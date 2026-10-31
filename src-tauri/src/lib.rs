@@ -6,6 +6,7 @@ mod desktop_smoke;
 mod fuse;
 mod runtime_path;
 mod tls;
+mod terminal;
 use tauri::{Emitter, Manager};
 
 pub(crate) fn open_main_ui(app: &tauri::AppHandle, restart: bool) -> tauri::Result<()> {
@@ -38,6 +39,7 @@ pub fn run() {
         .manage(tls::TlsState::default())
         .manage(desktop::DesktopState::default())
         .manage(desktop::urls::UrlState::default())
+        .manage(terminal::TerminalState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -62,8 +64,7 @@ pub fn run() {
             desktop::urls::desktop_url_open,
             desktop::urls::desktop_url_show,
             desktop::urls::desktop_url_hide,
-            desktop::urls::desktop_url_close,
-            desktop::urls::desktop_url_navigate,
+            terminal::terminal_list, terminal::terminal_create, terminal::terminal_read, terminal::terminal_write, terminal::terminal_resize, terminal::terminal_close, terminal::terminal_close_all,
             desktop::urls::desktop_url_action
         ])
         .on_window_event(|window, event| {
@@ -77,7 +78,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            desktop::init();
+            desktop::init(app.handle());
             tauri::tray::TrayIconBuilder::with_id(fuse::TRAY_ID)
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/tray.png"

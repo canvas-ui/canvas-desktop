@@ -38,7 +38,7 @@ export function useWindowChrome(report: (error: unknown) => void, options: { max
     hide: () => { if (native) void getCurrentWindow().hide().catch(report); },
   };
 }
-export type WindowChrome = ReturnType<typeof useWindowChrome>;
+type WindowChrome = ReturnType<typeof useWindowChrome>;
 
 export function WindowControls({ chrome, close = 'close' }: { chrome: WindowChrome; close?: 'close' | 'hide' | 'none' }) {
   if (!chrome.native) return null;

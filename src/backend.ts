@@ -12,7 +12,7 @@ export const load = () => invoke<Setup>('load_setup');
 export const save = (config: Config) => invoke('save_setup', { config });
 export const status = () => invoke<Status>('mount_status');
 export const action = (index: number, operation: string) => invoke('mount_action', { index, operation });
-export const activate = (url: string, tls?: ClientTls, allowImport = false) => invoke('activate_tls', { url, tls: tls || null, allowImport });
+const activate = (url: string, tls?: ClientTls, allowImport = false) => invoke('activate_tls', { url, tls: tls || null, allowImport });
 export const api = (remote: Remote) => {
   let ready: Promise<unknown> | undefined;
   return new CanvasApiClient({ fetch: async (input, init) => {

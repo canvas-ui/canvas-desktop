@@ -1,15 +1,22 @@
 import { useSyncExternalStore } from 'react';
-import { initialState, parseState, type DesktopState } from './model';
+import { initialState, parseState, type DesktopState } from './model.ts';
 
 // The server namespace is supplied by web-session. Account IDs isolate layouts
 // between people who sign into the same server on this device.
 export function createDesktopStore(account: string) {
-  const key = `desktop.shell.v1:${account}`;
+  const key = `desktop.shell.v2:${account}`;
   let state = initialState();
   let error = '';
   const listeners = new Set<() => void>();
   function read() {
-    try { state = parseState(localStorage.getItem(key)); error = ''; }
+    try {
+      const raw = localStorage.getItem(key);
+      const restored = parseState(raw);
+      const serialized = JSON.stringify(restored);
+      if (raw !== null && serialized !== raw) localStorage.setItem(key, serialized);
+      state = restored;
+      error = '';
+    }
     catch (e) { error = String(e); }
   }
   read();
@@ -31,7 +38,9 @@ export function createDesktopStore(account: string) {
       // Re-read before modifying to merge updates from independent webviews.
       read();
       if (error) throw new Error(error);
-      const next = update(state);
+      const updated = update(state);
+      if (updated === state) return;
+      const next = parseState(JSON.stringify(updated));
       localStorage.setItem(key, JSON.stringify(next));
       state = next; listeners.forEach(listener => listener());
     },

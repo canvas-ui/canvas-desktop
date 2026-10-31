@@ -1,4 +1,5 @@
-import { useCallback, useMemo, type ReactNode } from 'react';
+import { ContentWindowContext } from '@web/components/common/content-window-context';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   NavigationType, Routes, createPath, parsePath,
   UNSAFE_LocationContext as LocationContext, UNSAFE_NavigationContext as NavigationContext, UNSAFE_RouteContext as RouteContext,
@@ -19,6 +20,20 @@ import { CanvasRowContext, MAIN_COLUMN, type CanvasEntrySpec, type CanvasRowValu
 import { isBare, isFullBleed } from '@web/components/shell/route-chrome';
 import { getDocumentDisplayInfo } from '@web/lib/document-display';
 import type { Document } from '@web/types/workspace';
+import { MenuBar } from '@web/components/shell/MenuBar';
+import { M2Content } from '@web/components/shell/MenuPanelArea';
+import { useMenu } from '@web/components/shell/use-menu';
+import { WorkspaceList } from '@web/components/menu/workspaces/WorkspaceList';
+import { ContextList } from '@web/components/menu/contexts/ContextList';
+import { AgentList } from '@web/components/menu/agents/AgentList';
+import { AdminMenu } from '@web/components/menu/admin/AdminMenu';
+import { SettingsMenu } from '@web/components/menu/settings/SettingsMenu';
+import { AppsMenu } from '@web/components/menu/apps/AppsMenu';
+import { ToolboxPanel } from '@web/components/toolbox/ToolboxPanel';
+import { AddPanel } from '@web/components/toolbox/AddPanel';
+import { useToolbox } from '@web/components/toolbox/use-toolbox';
+import type { CanvasKind } from '../../desktop-state';
+import type { DesktopState } from '../../shell/model';
 import { documentLocation, webTitle } from '../../shell/model';
 import '../../web-host.css';
 
@@ -30,9 +45,42 @@ import '../../web-host.css';
 export type WebOpen = (entry: { location: string; title: string }, side: boolean) => void;
 
 function toPath(to: To): string { return createPath(typeof to === 'string' ? parsePath(to) : to); }
-function Shift({ children }: { children: ReactNode }) { return <>{children}</>; }
+type MenuOptions = { level: DesktopState['menu']; setLevel: (level: DesktopState['menu']) => void; toolbox: () => void };
+function WebMenu({ level, setLevel, toolbox }: MenuOptions) {
+  const { state, dispatch } = useMenu();
+  const { state: tools, closeT1 } = useToolbox();
+  const applied = useRef(level);
+  const pending = useRef(false);
+  useEffect(() => {
+    if (level !== applied.current) {
+      applied.current = level;
+      pending.current = true;
+      dispatch({ type: 'RESTORE_MENU', menu: { ...state, m0Open: true, m1Open: level === 'm1', m2Open: level === 'm2', m2View: level === 'm2' ? 'detail' : null, activeSection: state.activeSection || 'workspaces' } });
+    }
+  }, [level, state, dispatch]);
+  useEffect(() => {
+    const next = state.m2Open ? 'm2' : state.m1Open ? 'm1' : 'm0';
+    if (pending.current) { if (next === level || level === 'hidden') pending.current = false; return; }
+    if (level !== 'hidden' && next !== applied.current) { applied.current = next; setLevel(next); }
+  }, [level, state.m1Open, state.m2Open]);
+  useEffect(() => { if (tools.t1Open) { closeT1(); toolbox(); } }, [tools.t1Open, closeT1, toolbox]);
+  const section = state.activeSection;
+  return <div className="desktop-navigation"><MenuBar />{level !== 'hidden' && level !== 'm0' && <div className="desktop-navigation-panel">{level === 'm2' ? <M2Content /> : section === 'contexts' ? <ContextList /> : section === 'agents' ? <AgentList /> : section === 'admin' ? <AdminMenu /> : section === 'settings' ? <SettingsMenu /> : section === 'apps' ? <AppsMenu /> : <WorkspaceList />}</div>}</div>;
+}
 
-export default function WebCanvas({ location, onNavigate, onBack, open }: { location: string; onNavigate: (next: string) => void; onBack: (steps: number) => void; open: WebOpen }) {
+export default function WebCanvas({ location, onNavigate, onBack, open, menu, kind, windowView }: { location: string; onNavigate: (next: string) => void; onBack: (steps: number) => void; open: WebOpen; menu?: MenuOptions; kind?: CanvasKind; windowView?: React.ContextType<typeof ContentWindowContext> }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState<number>();
+  useEffect(() => {
+    if (!container.current) return;
+    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width));
+    observer.observe(container.current);
+    return () => observer.disconnect();
+  }, []);
+  const hostedView = useMemo(() => {
+    const schemas: Partial<Record<CanvasKind, string>> = { emails: 'data/schema/message/email', messages: 'data/schema/message', notes: 'data/schema/note', files: 'data/schema/file', tabs: 'data/schema/tab' };
+    return windowView ? { ...windowView, width, schema: kind ? schemas[kind] : undefined } : null;
+  }, [windowView, width, kind]);
   const loc = useMemo<Location>(() => {
     const p = parsePath(location);
     return { pathname: p.pathname || '/', search: p.search || '', hash: p.hash || '', state: null, key: location };
@@ -51,19 +99,19 @@ export default function WebCanvas({ location, onNavigate, onBack, open }: { loca
     openDocument, closeCanvas: () => {}, navigateCanvas: () => {}, toggleExpanded: () => {}, activateRow: (_key, _label, main) => onNavigate(main), moveRow: () => {}, closeRow: () => {},
   }), [location, open, openDocument, onNavigate, shift]);
   const bare = isBare(loc.pathname), fullBleed = isFullBleed(loc.pathname);
-  return <div className={`cw-web ${bare ? 'is-bare' : ''} ${fullBleed ? 'is-full-bleed' : ''}`} onPointerDownCapture={event => { (window as unknown as { __canvasShift?: boolean }).__canvasShift = event.shiftKey; }} onKeyDownCapture={event => { (window as unknown as { __canvasShift?: boolean }).__canvasShift = event.shiftKey; }}>
-    <ThemeProvider><ToastContainer><NotificationsProvider><CanvasPinsProvider>
+  return <div ref={container} className={`cw-web ${bare ? 'is-bare' : ''} ${fullBleed ? 'is-full-bleed' : ''}`} onPointerDownCapture={event => { (window as unknown as { __canvasShift?: boolean }).__canvasShift = event.shiftKey; }} onKeyDownCapture={event => { (window as unknown as { __canvasShift?: boolean }).__canvasShift = event.shiftKey; }}>
+    <ContentWindowContext.Provider value={hostedView}><ThemeProvider><ToastContainer><NotificationsProvider><CanvasPinsProvider>
       <NavigationContext.Provider value={navigation}>
         <LocationContext.Provider value={{ location: loc, navigationType: NavigationType.Push }}>
           <RouteContext.Provider value={{ outlet: null, matches: [], isDataRoute: false }}>
             <MenuProvider><AgentSessionProvider><ToolboxProvider><LensFeedProvider>
               <SideViewContext.Provider value={sideView}><CanvasRowContext.Provider value={row}><DocumentModalProvider>
-                <Shift><Routes>{shellRoutes}</Routes></Shift>
+                {menu ? <WebMenu {...menu} /> : <div className="flex h-full min-w-0 overflow-hidden"><div className="flex-1 min-w-0 overflow-auto"><Routes>{shellRoutes}</Routes></div><AddPanel /><ToolboxPanel /></div>}
               </DocumentModalProvider></CanvasRowContext.Provider></SideViewContext.Provider>
             </LensFeedProvider></ToolboxProvider></AgentSessionProvider></MenuProvider>
           </RouteContext.Provider>
         </LocationContext.Provider>
       </NavigationContext.Provider>
-    </CanvasPinsProvider></NotificationsProvider></ToastContainer></ThemeProvider>
+    </CanvasPinsProvider></NotificationsProvider></ToastContainer></ThemeProvider></ContentWindowContext.Provider>
   </div>;
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 mod geometry;
+mod keyboard;
 #[cfg(target_os = "linux")]
 mod kwin;
 #[cfg(not(target_os = "linux"))]
@@ -19,19 +20,28 @@ fn win(surface: &WebviewWindow) -> Window {
 }
 
 /// Main-thread setup: detect the display backend before any window work.
-pub fn init() {
+pub fn init(app: &tauri::AppHandle) {
     kwin::init();
+    for window in app.windows().values() { keyboard::install(window); }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = kwin::install_shortcuts(app.clone()) {
+            geometry::report(&app, error);
+        }
+    });
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
+    browser_tabs: Vec<String>,
     namespace: String,
     scope: String,
     frames: Vec<Frame>,
     focused: String,
     arrangement: String,
     gap: u32,
+    auto_tile: bool,
     placement: String,
     menu: String,
     toolbox_open: bool,
@@ -39,7 +49,9 @@ pub struct Request {
 #[derive(Clone, Debug, Deserialize)]
 struct Frame {
     id: String,
+    kind: String,
     title: String,
+    pinned: bool,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 struct Rect {
@@ -54,14 +66,14 @@ pub struct DesktopState {
     geometry: geometry::GeometryState,
 }
 fn label(request: &Request, id: &str) -> String {
-    let identity = serde_json::to_vec(&(&request.namespace, &request.scope, id)).unwrap();
+    let identity = serde_json::to_vec(&(&request.namespace, id)).unwrap();
     format!("canvas-{:x}", Sha256::digest(identity))
 }
 fn menu_key(request: &Request) -> String {
     let identity = serde_json::to_vec(&(
         &request.namespace,
         &request.placement,
-        request.menu == "hidden",
+        matches!(request.menu.as_str(), "hidden" | "m0"),
     ))
     .unwrap();
     format!("menu-{:x}", Sha256::digest(identity))
@@ -99,6 +111,63 @@ fn tile_rect(area: Rect, index: usize, count: usize, grid: bool, gap: u32) -> Re
         width: width.max(1),
         height: height.max(1),
     }
+}
+/// Content starts beside the menu only on the output it intersects.
+fn content_area(mut area: Rect, menu: Rect, top: bool) -> Rect {
+    if menu.x >= area.x + area.width as i32
+        || menu.x + menu.width as i32 <= area.x
+        || menu.y >= area.y + area.height as i32
+        || menu.y + menu.height as i32 <= area.y
+    {
+        return area;
+    }
+    if top {
+        let reserve = (menu.y + menu.height as i32 - area.y).max(0) as u32;
+        area.y += reserve.min(area.height) as i32;
+        area.height = area.height.saturating_sub(reserve);
+    } else {
+        let reserve = (menu.x + menu.width as i32 - area.x).max(0) as u32;
+        area.x += reserve.min(area.width) as i32;
+        area.width = area.width.saturating_sub(reserve);
+    }
+    area
+}
+/// Keep a fixed window clear by taking the largest remaining rectangle.
+fn avoid(area: Rect, obstacle: Rect) -> Rect {
+    let left = obstacle.x.max(area.x).min(area.x + area.width as i32);
+    let right = (obstacle.x + obstacle.width as i32)
+        .max(area.x)
+        .min(area.x + area.width as i32);
+    let top = obstacle.y.max(area.y).min(area.y + area.height as i32);
+    let bottom = (obstacle.y + obstacle.height as i32)
+        .max(area.y)
+        .min(area.y + area.height as i32);
+    if left >= right || top >= bottom {
+        return area;
+    }
+    [
+        Rect {
+            width: (left - area.x) as u32,
+            ..area
+        },
+        Rect {
+            x: right,
+            width: (area.x + area.width as i32 - right) as u32,
+            ..area
+        },
+        Rect {
+            height: (top - area.y) as u32,
+            ..area
+        },
+        Rect {
+            y: bottom,
+            height: (area.y + area.height as i32 - bottom) as u32,
+            ..area
+        },
+    ]
+    .into_iter()
+    .max_by_key(|r| r.width as u64 * r.height as u64)
+    .unwrap()
 }
 /// Outer position plus client size, physical pixels. On KDE Wayland GTK cannot
 /// position toplevels, so the move is queued for KWin (see `kwin::flush`).
@@ -193,6 +262,7 @@ fn build_surface(
     };
     let window = builder.build().map_err(|e| e.to_string())?;
     crate::tls::install(window.as_ref())?;
+    keyboard::install(&win(&window));
     Ok(window)
 }
 #[tauri::command]
@@ -200,6 +270,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     if request.frames.len() > 24 || request.gap > 64 {
         return Err("This foundation supports up to 24 windows per path.".into());
     }
+    urls::retain(&app, &request.browser_tabs).await?;
     let main = app.get_window("main").ok_or("Main menu is unavailable")?;
     let monitors = main.available_monitors().map_err(|e| e.to_string())?;
     let primary = main
@@ -230,7 +301,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
             window.hide().map_err(|e| e.to_string())?;
             kwin::forget(&id);
             // Reuse canvases on return to a recent context, cap dormant webviews.
-            if app.windows().len() > request.frames.len() + 10 {
+            if app.windows().len() > request.frames.len() + 10 && window.webviews().len() == 1 {
                 urls::forget_window(&app, &id);
                 window.destroy().map_err(|e| e.to_string())?;
             }
@@ -238,15 +309,18 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     }
     let area = monitor_area(&primary);
     let scale = primary.scale_factor();
-    let menu_width = if request.menu == "hidden" {
+    let compact = matches!(request.menu.as_str(), "hidden" | "m0");
+    let menu_width = if request.placement == "top" && compact {
+        900.0_f64.min(area.width as f64 / scale - 32.0)
+    } else if compact {
         76.0
     } else if request.placement == "top" {
         390.0
     } else {
         340.0
     };
-    let menu_height = if request.placement == "top" && request.menu == "hidden" {
-        76.0
+    let menu_height = if request.placement == "top" && compact {
+        100.0
     } else {
         740.0_f64.min(area.height as f64 / scale - 60.0)
     };
@@ -277,12 +351,11 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         }
         geometry::bind(&main, menu_key)?;
     }
-    let mut all_new = !request.frames.is_empty();
+
     for (index, frame) in request.frames.iter().enumerate() {
         let id = label(&request, &frame.id);
         let existing = app.get_window(&id);
         let window = if let Some(window) = existing {
-            all_new = false;
             window
         } else {
             let window = win(&build_surface(
@@ -293,7 +366,6 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                 true,
             )?);
             if let Some(saved) = geometry.get(&id) {
-                all_new = false;
                 geometry::restore(&window, saved, &monitors, &primary, (320.0, 240.0))?;
             } else {
                 // New windows get a cascading placement without moving existing canvases.
@@ -306,6 +378,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                 let monitor = focused
                     .as_ref()
                     .and_then(|w| window_monitor(w, None).ok().flatten())
+                    .or_else(|| window_monitor(&main, None).ok().flatten())
                     .unwrap_or(primary.clone());
                 let area = monitor_area(&monitor);
                 let scale = monitor.scale_factor();
@@ -333,7 +406,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         window
             .set_title(&format!("{} — canvas", frame.title))
             .map_err(|e| e.to_string())?;
-        if request.arrangement == "focus" && frame.id != request.focused {
+        if request.arrangement == "focus" && frame.id != request.focused && !frame.pinned {
             geometry::remember(&window)?;
             window.hide().map_err(|e| e.to_string())?;
             kwin::forget(&id);
@@ -342,18 +415,28 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         }
         geometry::bind(&window, id)?;
     }
+    if kwin::managed() {
+        kwin::set_state(&main, Some(vec![]), None)?;
+    }
     // KWin applies queued placement once the shown windows are mapped.
     let place_error = kwin::flush(&app).err();
     *app.state::<DesktopState>()
         .request
         .lock()
         .map_err(|e| e.to_string())? = Some(request.clone());
-    // Context restoration, focus, tabs and toolbox toggles must not retile manual bounds.
-    let rearrange = (switched && all_new)
-        || (!switched
-            && previous.as_ref().is_some_and(|old| {
-                old.arrangement != request.arrangement || old.gap != request.gap
-            }));
+    // Pinned frames keep their monitor and bounds while following navigation.
+    let rearrange = request.auto_tile
+        && previous.as_ref().is_none_or(|old| {
+            switched
+                || old.arrangement != request.arrangement
+                || old.gap != request.gap
+                || old.menu != request.menu
+                || old.placement != request.placement
+                || old.auto_tile != request.auto_tile
+                || old.toolbox_open != request.toolbox_open
+                || old.frames.iter().map(|f| &f.id).collect::<Vec<_>>()
+                    != request.frames.iter().map(|f| &f.id).collect::<Vec<_>>()
+        });
     let tile_error = if rearrange {
         desktop_tile(app.clone()).await.err()
     } else {
@@ -424,7 +507,14 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         toolbox.show().map_err(|e| e.to_string())?;
         geometry::bind(&toolbox, toolbox_key)?;
     } else {
-        show_restored(&app, &toolbox, &toolbox_key, &monitors, &monitor, (60.0, 60.0))?;
+        show_restored(
+            &app,
+            &toolbox,
+            &toolbox_key,
+            &monitors,
+            &monitor,
+            (60.0, 60.0),
+        )?;
     }
     kwin::flush(&app)?;
     if switched {
@@ -450,11 +540,12 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
     };
     let main = app.get_window("main").ok_or("Main menu is unavailable")?;
     let monitors = main.available_monitors().map_err(|e| e.to_string())?;
-    let mut placed = Vec::new();
+    let mut planned = Vec::new();
     for monitor in monitors {
-        let mut windows: Vec<_> = request
+        let windows: Vec<_> = request
             .frames
             .iter()
+            .filter(|frame| !frame.pinned)
             .filter(|frame| request.arrangement != "focus" || frame.id == request.focused)
             .filter_map(|frame| app.get_window(&label(&request, &frame.id)))
             .filter(|window| {
@@ -468,25 +559,23 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
             continue;
         }
         let focused_label = label(&request, &request.focused);
-        windows.sort_by_key(|window| window.label() != focused_label);
         let mut area = monitor_area(&monitor);
         let scale = monitor.scale_factor();
-        // Reserve controls only on the display containing the main menu.
-        if window_monitor(&main, None)
-            .ok()
-            .flatten()
-            .is_some_and(|current| current.position() == monitor.position())
-            && area.width as f64 / scale > 1000.0
-        {
-            let reserve = ((if request.menu == "hidden" {
-                90.0
-            } else {
-                365.0
-            }) * scale) as u32;
-            area.x += reserve as i32;
-            area.width = area.width.saturating_sub(reserve);
+        // Reserve the menu's actual bounds, including manual moves and top placement.
+        if let Some(menu) = geometry::capture(&main)?.map(|g| g.rect) {
+            area = content_area(
+                area,
+                menu,
+                request.placement == "top" && matches!(request.menu.as_str(), "hidden" | "m0"),
+            );
         }
-        area.height = area.height.saturating_sub((76.0 * scale) as u32);
+        for frame in request.frames.iter().filter(|frame| frame.pinned) {
+            if let Some(window) = app.get_window(&label(&request, &frame.id)) {
+                if let Some(saved) = geometry::capture(&window)? {
+                    area = avoid(area, saved.rect);
+                }
+            }
+        }
         let toolbox_space = if request.toolbox_open
             && windows.iter().any(|window| window.label() == focused_label)
         {
@@ -496,28 +585,28 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
         };
         area.width = area.width.saturating_sub(toolbox_space);
         for (i, window) in windows.iter().enumerate() {
-            let mut rect = tile_rect(
+            let rect = tile_rect(
                 area,
                 i,
                 windows.len(),
                 request.arrangement == "grid",
                 (request.gap as f64 * scale) as u32,
             );
-            if request.arrangement == "columns" && i > 0 {
-                rect.x += toolbox_space as i32;
-            }
             if rect.width < (320.0 * scale) as u32 || rect.height < (240.0 * scale) as u32 {
                 return Err("Too many windows to tile on this display. Group canvases into tabs or move a window to another display.".into());
             }
-            window.unmaximize().map_err(|e| e.to_string())?;
-            window.unminimize().map_err(|e| e.to_string())?;
-            place(window, rect)?;
-            placed.push(window.clone());
+            planned.push((window.clone(), rect));
         }
+    }
+    // Validate the whole layout before moving any window.
+    for (window, rect) in &planned {
+        window.unmaximize().map_err(|e| e.to_string())?;
+        window.unminimize().map_err(|e| e.to_string())?;
+        place(window, *rect)?;
     }
     // One KWin round trip for every tile, then record the resulting bounds.
     kwin::flush(&app)?;
-    for window in &placed {
+    for (window, _) in &planned {
         geometry::remember(window)?;
     }
     Ok(())
@@ -548,7 +637,7 @@ pub async fn desktop_hide_surfaces(app: tauri::AppHandle) -> Result<(), String> 
     Ok(())
 }
 #[tauri::command]
-pub fn desktop_reveal_menu(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn desktop_reveal_menu(app: tauri::AppHandle) -> Result<(), String> {
     crate::open_main_ui(&app, false).map_err(|e| e.to_string())
 }
 #[tauri::command]
@@ -596,7 +685,7 @@ pub fn restore_active(app: &tauri::AppHandle) {
             }
         };
         for frame in &request.frames {
-            if request.arrangement == "focus" && frame.id != request.focused {
+            if request.arrangement == "focus" && frame.id != request.focused && !frame.pinned {
                 continue;
             }
             let id = label(&request, &frame.id);
@@ -652,7 +741,12 @@ pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     }
 }
 pub fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    if matches!(event, tauri::RunEvent::Exit) {
+        crate::terminal::shutdown(app);
+        kwin::remove_shortcuts();
+    }
     if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+        crate::terminal::shutdown(app);
         if let Err(error) = geometry::save_all(app) {
             geometry::report(app, error);
         }
@@ -712,6 +806,36 @@ mod tests {
         assert!(second.x + second.width as i32 <= area.x + area.width as i32);
         let last = tile_rect(area, 3, 4, true, 24);
         assert!(last.y + last.height as i32 <= area.y + area.height as i32);
+    }
+    #[test]
+    fn menu_and_pinned_bounds_reserve_only_their_own_output() {
+        let area = Rect {
+            x: 100,
+            y: 30,
+            width: 1600,
+            height: 900,
+        };
+        let menu = Rect {
+            x: 116,
+            y: 54,
+            width: 340,
+            height: 740,
+        };
+        let content = content_area(area, menu, false);
+        assert_eq!(content.x, 456);
+        assert_eq!(content.width, 1244);
+        assert_eq!(content_area(area, Rect { x: -1920, ..menu }, false), area);
+        assert_eq!(content_area(area, Rect { height: 76, ..menu }, true).y, 130);
+        let remaining = avoid(
+            content,
+            Rect {
+                x: 1000,
+                y: 30,
+                width: 700,
+                height: 900,
+            },
+        );
+        assert_eq!(remaining.x + remaining.width as i32, 1000);
     }
     #[test]
     fn tiny_displays_never_underflow_tiling_math() {

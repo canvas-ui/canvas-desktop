@@ -8,7 +8,7 @@ fn desktop_test_snapshot(app: tauri::AppHandle) -> serde_json::Value {
         let position = window.outer_position().ok();
         let size = window.inner_size().ok();
         let webviews: Vec<String> = window.webviews().iter().map(|w| w.label().to_string()).collect();
-        serde_json::json!({ "id": id, "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height), "webviews": webviews })
+        serde_json::json!({ "id": id, "title": window.title().ok(), "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height), "webviews": webviews })
     }).collect::<Vec<_>>())
 }
 #[tauri::command]
@@ -46,9 +46,31 @@ async fn desktop_test_place(
     Ok(())
 }
 #[tauri::command]
+async fn desktop_test_url_close(app: tauri::AppHandle, window: String, tab: String) -> Result<(), String> {
+    crate::desktop::urls::close_fixture_page(app, window, tab).await
+}
+#[tauri::command]
+async fn desktop_test_page_eval(
+    app: tauri::AppHandle,
+    id: String,
+    script: String,
+) -> Result<String, String> {
+    let view = app.get_webview(&id).ok_or("Fixture page is missing")?;
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    view.eval_with_callback(script, move |result| {
+        let _ = sender.try_send(result);
+    })
+    .map_err(|e| e.to_string())?;
+    receiver
+        .recv()
+        .await
+        .ok_or("Fixture page did not evaluate".into())
+}
+#[tauri::command]
 async fn desktop_test_result(app: tauri::AppHandle, result: serde_json::Value) {
     let path = std::env::var("CANVAS_DESKTOP_SMOKE_RESULT").expect("result path");
     std::fs::write(path, result.to_string()).expect("write result");
+    crate::terminal::shutdown(&app);
     app.exit(if result["ok"] == true { 0 } else { 1 });
 }
 pub fn run() {
@@ -60,14 +82,16 @@ pub fn run() {
         .manage(crate::tls::TlsState::default())
         .manage(crate::desktop::DesktopState::default())
         .manage(crate::desktop::urls::UrlState::default())
+        .manage(crate::terminal::TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             crate::config::load_remotes, crate::tls::activate_tls,
             crate::desktop::desktop_sync, crate::desktop::desktop_tile,
             crate::desktop::desktop_hide_surfaces,
             crate::desktop::desktop_reveal_menu,
             crate::desktop::urls::desktop_url_open, crate::desktop::urls::desktop_url_show, crate::desktop::urls::desktop_url_hide,
-            crate::desktop::urls::desktop_url_close, crate::desktop::urls::desktop_url_navigate, crate::desktop::urls::desktop_url_action,
-            desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_result
+            crate::desktop::urls::desktop_url_action,
+            crate::terminal::terminal_list, crate::terminal::terminal_create, crate::terminal::terminal_read, crate::terminal::terminal_write, crate::terminal::terminal_resize, crate::terminal::terminal_close, crate::terminal::terminal_close_all,
+            desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_page_eval, desktop_test_url_close, desktop_test_result
         ])
         .on_window_event(crate::desktop::window_event)
         .setup(move |app| {

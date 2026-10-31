@@ -65,7 +65,7 @@ uses semantic CSS tokens ready for a later theme adapter.
 
 While a Canvas window has focus, **Ctrl+Alt+Left** cycles M2 → M1 → M0 → hidden,
 **Ctrl+Alt+Space** toggles the toolbox, **Ctrl+Alt+A** opens agents, and **Escape**
-dismisses panels. These are application shortcuts, not OS-global registrations.
+dismisses panels. On KDE Plasma, Ctrl+Alt+0/1/2 opens M0/M1/M2 globally and Ctrl+Alt+Left cycles them. Reassign these defaults in Plasma System Settings → Shortcuts → KWin. The menu is present on every virtual desktop; toolbox shortcuts work in focused Canvas windows.
 
 ## Local state and extension points
 
@@ -310,3 +310,47 @@ canvas-common, nginx/OpenSSL, and Linux Xvfb/dbus-run-session. The test-only bui
 pins its private fixture server certificate/CA; production builds have no test
 trust override. Windows tests require an ephemeral CI account and clean up their
 fixture CA/imports. Platform runtime validation must pass before claiming support.
+
+### Tiling and reusable windows
+
+Desktop uses the web UI's navigation menus, document lists, editors and tool panels.
+Preferences offers automatic tiling beside the menu or manual window placement.
+The toolbox selects columns, grid or focus order and the gap; tiling preserves
+frame order and respects the menu's actual position on its monitor.
+
+Pin a canvas with the pin button in its tab bar to reuse that window across tree
+navigation. Its tabs, selected view, document layout and monitor placement stay
+with it while the selected data path changes. Pinned windows remain visible in
+focus mode and tiling arranges other windows around them. Unpin to return the
+window to the current path's layout.
+
+The shell uses a new v2 local layout namespace. Existing v1 arrangements are not
+loaded or migrated; server content and saved web views are unaffected.
+
+### Browser controls and Terminal
+
+The tab strip supports **+**, double-click on empty strip space, **Ctrl+T**
+(new tab), **Ctrl+N** (new canvas), **Ctrl+W** (close tab), **Ctrl+Shift+T**
+(reopen), **Ctrl+Tab / Ctrl+Shift+Tab**, **Ctrl+PageUp / PageDown**, and
+**Ctrl+1…9**. Website tabs also support **Ctrl+L**, **Ctrl+R / F5** and
+**Alt+Left / Right**. Middle-click closes a tab. Drag tabs to reorder or merge
+windows, drag outside the window to detach, or use the detach button. Dragging
+a lone tab moves its native window. Page identity belongs to the tab, so moving
+it reparents the live webview with its history, form state and scripts intact.
+Linux captures accelerators in GTK so they work while website webviews have focus.
+
+**Terminal** is available in Apps, the content-view app picker, and the desktop
+canvas launcher. Each workspace/tree/path has an independent set of local shell
+sessions. Switching paths or closing a terminal canvas leaves those sessions
+running; returning reattaches them with the same working directories, environment
+and output. The session close button ends that shell and its jobs. Signing out
+of the desktop shell or exiting the application ends its local sessions. Application
+restart starts a new session manager; processes are not restored across restart.
+
+The terminal uses xterm.js with a Rust portable-pty backend. It starts in your home
+directory by default, or in the starting directory entered for the first session;
+logical Canvas paths are not interpreted as filesystem paths. Session output is
+bounded to 4 MiB per shell, and the manager accepts up to 128 sessions. Ctrl+C
+interrupts the shell; Ctrl+Shift+C copies a selection. Website webviews cannot
+invoke terminal commands. The UI app is shared with canvas-web through a terminal
+transport provider; this build supplies the local Tauri transport.

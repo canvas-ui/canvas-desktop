@@ -1,3 +1,6 @@
+import { tabShortcut } from './tab-shortcuts';
+import { TerminalTransportContext } from '@web/components/terminal/terminal-transport';
+import { createTerminalTransport } from './terminal';
 import { lazy, Suspense, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { CanvasApiClient } from '@augmentd-labs/canvas-api-client';
 import { invoke } from '@tauri-apps/api/core';
@@ -8,7 +11,7 @@ import { Toolbox } from '../components/toolbox/Toolbox';
 import { CanvasWindow } from '../components/canvas-window/CanvasWindow';
 import { Settings } from '../components/settings/Settings';
 import { createDesktopStore, useDesktopState } from './store';
-import { addCanvas, cycleMenu, scopeKey, scopeUrl, updateLayout, type Scope } from './model';
+import { addCanvas, cycleMenu, focusFrame, tabAction, scopeKey, scopeUrl, updateLayout, type Scope } from './model';
 import type { DesktopServices, DesktopWidget } from './integration';
 import { native, surface, syncWindows, tileWindows, stopWindows } from './native';
 import { installAutomation } from './automation';
@@ -43,6 +46,7 @@ export default function Desktop({ url, changeServer }: { url: string; changeServ
     return () => window.removeEventListener('storage', storageChanged);
   }, []);
   async function logout() {
+    if (native) await invoke('terminal_close_all').catch(e => setError(String(e)));
     await stopWindows().catch(e => setError(String(e)));
     try { await client.auth.logout(); } catch { /* Local logout must work offline. */ }
     localStorage.removeItem('authToken');
@@ -80,21 +84,23 @@ function Login({ client, url, error: initialError, connected, changeServer }: { 
 }
 function Workspace({ client, account, logout, changeServer }: { client: CanvasApiClient; account: Account; logout: () => void; changeServer: () => void }) {
   const store = useMemo(() => createDesktopStore(account.id), [account.id]);
+  const terminals = useMemo(() => native ? createTerminalTransport(JSON.stringify([client.baseUrl, account.id])) : null, [client.baseUrl, account.id]);
   const state = useDesktopState(store);
   const [error, setError] = useState(store.error());
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get('action') === 'settings');
   const [mounts, setMounts] = useState(new URLSearchParams(location.search).get('action') === 'mounts');
   const query = useMemo(() => new URLSearchParams(location.search), []);
-  const boundKey = surface === 'canvas' ? query.get('scope') : null;
-  const boundScope = useMemo(() => {
-    if (!boundKey) return undefined;
-    try { const [workspace, tree, treeType, path] = JSON.parse(boundKey); return { mode: 'explorer', workspace, tree, treeType, path } as Scope; } catch { return undefined; }
-  }, [boundKey]);
-  const scope = boundScope || state.scope;
+  // Frame identity survives navigation; resolve its current owner from shared state.
+  const ownerKey = surface === 'canvas' ? Object.keys(state.layouts).find(key => state.layouts[key].frames.some(frame => frame.id === query.get('frame'))) : undefined;
+  const scope = useMemo(() => {
+    if (!ownerKey) return state.scope;
+    const [workspace, tree, treeType, path] = JSON.parse(ownerKey);
+    return { mode: 'explorer', workspace, tree, treeType, path } as Scope;
+  }, [ownerKey, state.scope]);
   const key = scope ? scopeKey(scope) : '';
   const layout = state.layouts[key];
   const report = (error: unknown) => setError(String(error));
-  const nativeKey = JSON.stringify([state.scope, layout?.frames.map(frame => [frame.id, frame.tabs.find(tab => tab.id === frame.active)?.title]), layout?.focused, layout?.arrangement, state.gap, state.placement, state.menu === 'hidden', state.toolbox.open]);
+  const nativeKey = JSON.stringify([Object.values(state.layouts).flatMap(layout => layout.frames.flatMap(frame => frame.tabs.filter(tab => tab.kind === 'browser').map(tab => tab.id))), state.scope, layout?.frames.map(frame => [frame.id, frame.active, frame.pinned, frame.tabs.map(tab => [tab.id, tab.kind]), frame.tabs.find(tab => tab.id === frame.active)?.title]), layout?.focused, layout?.arrangement, state.gap, state.autoTile, state.placement, state.menu, state.toolbox.open]);
   const services: DesktopServices = { client, store, state, scope, layout, account: account.email || account.id, native, report, settings: () => setSettings(true), mounts: () => setMounts(true), logout, changeServer, tile: () => { void tileWindows().catch(report); } };
   useEffect(() => () => store.dispose(), [store]);
   useEffect(() => installAutomation(store), [store]);
@@ -122,7 +128,10 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     const keyboard = (event: KeyboardEvent) => {
       if (event.repeat) return;
       try {
-        if (event.ctrlKey && event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); store.update(old => ({ ...old, menu: cycleMenu(old.menu) })); if (native) void invoke('desktop_reveal_menu').catch(report); }
+        const action = surface === 'toolbox' ? undefined : tabShortcut(event);
+        if (action && !['address', 'reload', 'back', 'forward'].includes(action)) { event.preventDefault(); store.update(old => tabAction(old, action as Parameters<typeof tabAction>[1], query.get('frame') || undefined)); return; }
+        if (event.ctrlKey && event.altKey && /^Digit[012]$/.test(event.code)) { event.preventDefault(); store.update(old => ({ ...old, menu: `m${event.code.slice(-1)}` as typeof old.menu })); if (native) void invoke('desktop_reveal_menu').catch(report); }
+        else if (event.ctrlKey && event.altKey && event.key === 'ArrowLeft') { event.preventDefault(); store.update(old => ({ ...old, menu: cycleMenu(old.menu) })); if (native) void invoke('desktop_reveal_menu').catch(report); }
         else if (event.ctrlKey && event.altKey && event.code === 'Space') { event.preventDefault(); store.update(old => ({ ...old, toolbox: { ...old.toolbox, open: !old.toolbox.open } })); }
         else if (event.ctrlKey && event.altKey && event.code === 'KeyA') { event.preventDefault(); store.update(old => ({ ...old, toolbox: { ...old.toolbox, open: true, page: 'agents' } })); }
         else if (event.key === 'Escape') { setSettings(false); setMounts(false); store.update(old => ({ ...old, menu: 'hidden', toolbox: { ...old.toolbox, open: false } })); }
@@ -130,10 +139,11 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     };
     window.addEventListener('keydown', keyboard);
     if (!native) return () => window.removeEventListener('keydown', keyboard);
-    const listeners = [listen<string>('desktop:error', ({ payload }) => report(payload)), listen<string>('desktop:action', ({ payload }) => {
+    const listeners = [listen<string>('desktop:tab-action', ({ payload }) => { if (!['address', 'reload', 'back', 'forward'].includes(payload)) { try { store.update(old => tabAction(old, payload as Parameters<typeof tabAction>[1], query.get('frame') || undefined)); } catch (error) { report(error); } } }), listen<string>('desktop:error', ({ payload }) => report(payload)), listen<string>('desktop:action', ({ payload }) => {
       if (payload === 'settings') setSettings(true);
       else if (payload === 'mounts') setMounts(true);
       else if (payload === 'logout') logout();
+      else if (['m0', 'm1', 'm2', 'cycle-menu'].includes(payload)) store.update(old => ({ ...old, menu: payload === 'cycle-menu' ? cycleMenu(old.menu) : payload as typeof old.menu }));
       else if (payload === 'menu') store.update(old => ({ ...old, menu: old.menu === 'hidden' ? (old.scope ? 'm2' : 'm1') : 'hidden' }));
     }), listen('desktop:close', () => {
       if (surface === 'canvas') store.update(old => updateLayout(old, key, layout => {
@@ -141,13 +151,13 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
         return { ...layout, frames, focused: frames.some(frame => frame.id === layout.focused) ? layout.focused : frames[0]?.id || '' };
       }));
     }), listen('desktop:focused', () => {
-      if (surface === 'canvas' && store.get().scope && scopeKey(store.get().scope!) === key) store.update(old => updateLayout(old, key, layout => ({ ...layout, focused: query.get('frame') || layout.focused })));
+      if (surface === 'canvas') { try { store.update(old => focusFrame(old, query.get('frame') || '')); } catch (error) { report(error); } }
     })];
     return () => { window.removeEventListener('keydown', keyboard); listeners.forEach(promise => { void promise.then(unlisten => unlisten()).catch(report); }); };
   }, [store, key]);
   const frame = surface === 'canvas' ? layout?.frames.find(frame => frame.id === query.get('frame')) : undefined;
-  const visibleFrames = layout?.arrangement === 'focus' ? layout.frames.filter(frame => frame.id === layout.focused) : layout?.frames || [];
-  return <div className={`ds-root ds-surface-${surface} ${native ? 'ds-native' : 'ds-preview'} ds-menu-${state.menu} ds-placement-${state.placement} ${state.toolbox.open ? 'ds-toolbox-open' : ''}`} style={{ '--ds-gap': `${state.gap}px` } as CSSProperties} onClickCapture={event => {
+  const visibleFrames = layout?.arrangement === 'focus' ? layout.frames.filter(frame => frame.pinned || frame.id === layout.focused) : layout?.frames || [];
+  return <TerminalTransportContext.Provider value={terminals}><div className={`ds-root ds-surface-${surface} ${native ? 'ds-native' : 'ds-preview'} ds-menu-${state.menu} ds-placement-${state.placement} ${state.toolbox.open ? 'ds-toolbox-open' : ''}`} style={{ '--ds-gap': `${state.gap}px` } as CSSProperties} onClickCapture={event => {
     if (!native || (event.target as Element).closest('.cw-web')) return;
     const link = (event.target as Element).closest('a[href^="/"]');
     if (link) { event.preventDefault(); void invoke('desktop_open_web', { path: link.getAttribute('href') }).catch(report); }
@@ -155,12 +165,12 @@ function Workspace({ client, account, logout, changeServer }: { client: CanvasAp
     {surface === 'canvas' ? frame ? <CanvasWindow frame={frame} services={services} /> : <div className="ds-empty">This canvas has been closed.</div> : surface === 'toolbox' ? <Toolbox {...services} /> : <>
       <MainMenu {...services} />
       {!native && <main className="ds-stage"><header className="ds-stage-heading"><div><span className="cw-eyebrow">A SPACE THAT FOLLOWS YOUR FOCUS</span><span className="ds-stage-location">{scope ? scopeUrl(scope) : 'Welcome to your desktop'}</span></div><span className="ds-local-label"><span className="ds-live-dot" /> Saved on this device</span></header><div className={`ds-canvas-stage ds-arrangement-${layout?.arrangement || 'columns'} ds-count-${visibleFrames.length}`}>
-        {visibleFrames.length ? visibleFrames.map(frame => <CanvasWindow key={`${key}:${frame.id}`} frame={frame} services={services} />) : <div className="ds-empty"><Layers3 size={44} strokeWidth={1} /><h1>Space for what matters.</h1><p>{scope ? 'Your layout is empty. Bring a canvas into focus.' : 'Choose a workspace to bring its content into focus.'}</p>{scope && <button className="ds-primary" onClick={() => store.update(old => updateLayout(old, key, layout => addCanvas(layout, 'content')))}><Plus size={15} /> Open a canvas</button>}</div>}
+        {visibleFrames.length ? visibleFrames.map(frame => <CanvasWindow key={frame.id} frame={frame} services={services} />) : <div className="ds-empty"><Layers3 size={44} strokeWidth={1} /><h1>Space for what matters.</h1><p>{scope ? 'Your layout is empty. Bring a canvas into focus.' : 'Choose a workspace to bring its content into focus.'}</p>{scope && <button className="ds-primary" onClick={() => store.update(old => updateLayout(old, key, layout => addCanvas(layout, 'content')))}><Plus size={15} /> Open a canvas</button>}</div>}
       </div><footer className="ds-stage-footer"><span>canvas <span> / </span> your context, collected</span><button onClick={changeServer}>Change server <ArrowUpRight size={11} /></button></footer></main>}
       {!native && <Toolbox {...services} />}
     </>}
     {error && <div className="ds-toast" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}><X size={15} /></button></div>}
     {settings && <Settings services={services} close={() => setSettings(false)} />}
     {mounts && <div className="ds-dialog-backdrop"><section className="ds-mounts" role="dialog" aria-modal="true" aria-label="Mounts and connections"><button className="ds-icon-button ds-mounts-close" autoFocus aria-label="Close mounts" onClick={() => setMounts(false)}><X size={18} /></button>{native ? <Suspense fallback={<p>Opening mounts…</p>}><MountSetup /></Suspense> : <p>Mount management is available in the native desktop app.</p>}</section></div>}
-  </div>;
+  </div></TerminalTransportContext.Provider>;
 }

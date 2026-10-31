@@ -15,6 +15,7 @@ const server=http.createServer(async(req,res)=>{
  try {
  const url=new URL(req.url,'http://localhost');const p=url.pathname;
  res.setHeader('Access-Control-Allow-Origin',req.headers.origin || 'http://127.0.0.1:1430');res.setHeader('Access-Control-Allow-Credentials','true');res.setHeader('Access-Control-Allow-Headers',req.headers['access-control-request-headers'] || '*');res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,PATCH,DELETE,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
+ if(p==='/__page'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Website fixture</title><input id=state placeholder="Page state">');return;}
  if(p==='/__fixture'){let body='';for await(const chunk of req)body+=chunk;console.error('FIXTURE REPORT',body);res.end('ok');return;}
  if(p.startsWith('/rest/v2')){apiPorts.push(req.socket.localPort);
  let body='';for await(const chunk of req)body+=chunk;
@@ -109,40 +110,60 @@ await waitFor(`location.pathname!=='/login' && !document.querySelector('input[ty
 assert.equal(loginCalls,2);assert.ok(apiPorts.length>0 && apiPorts.every(port=>port===1431), JSON.stringify(apiPorts));
 assert.equal(await evaluate(`localStorage.getItem('authToken')`),'canvas-test-token');
 assert.deepEqual(await evaluate('window.nativeCalls'),['load_remotes','activate_tls']);
-await waitFor(`document.querySelector('[aria-label="Virtual directory tree"]') && document.querySelector('.cw-window')`);
+await waitFor(`document.querySelector('.desktop-navigation') && window.__CANVAS_DESKTOP_UI__`);
 const click=async selector=>evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-await click('.mm-tree-path[title="/work/customer-foo/ops/snow-12345"]');
-await waitFor(`document.querySelector('.cw-location').textContent.includes('snow-12345') && document.querySelector('.cw-web') && !document.body.innerText.includes('Workspace unavailable')`);
-await click('[aria-label="Open toolbox"]');
-await waitFor(`document.querySelector('[aria-label="Toolbox"]')`);
-await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Notes')).click()`);
-await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-document').length===2`);
-assert.ok(documentQueries.some(q=>q.context==='/work/customer-foo/ops/snow-12345' && q.treeNameOrTreeId==='context' && q.allOf==='data/schema/note'));
-await click('.tb-label input[type="checkbox"]');
-await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Email')).click()`);
-await waitFor(`document.querySelectorAll('.cw-tab').length===3 && document.querySelector('[aria-label="Email canvas"]')`);
-await click('.mm-tree-path[title="/work/customer-foo/ops/snow-12346"]');
-await waitFor(`document.querySelectorAll('.cw-window').length===1`);
-await click('.mm-tree-path[title="/work/customer-foo/ops/snow-12345"]');
-await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-tab').length===3`);
+const navigateTo = async path => evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'navigate',scope:{mode:'explorer',workspace:'universe',tree:'context',treeType:'context',path:${JSON.stringify(path)}}})`);
+for (const digit of [0, 1]) {
+ await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,altKey:true,code:'Digit${digit}'}))`);
+ await waitFor(`window.__CANVAS_DESKTOP_UI__.snapshot().menu==='m${digit}'`);
+}
+await navigateTo('/work/customer-foo/ops/snow-12345');
+await waitFor(`document.querySelector('.cw-location')?.textContent.includes('snow-12345') && document.querySelector('[aria-label="Document layout"]')`);
+// The tab strip follows browser controls: plus, double-click, keyboard and reopen.
+await click('[aria-label="New tab"]');
+await waitFor(`document.querySelector('.cw-tab [role="tab"][aria-selected="true"]')?.textContent.includes('New tab')`);
+await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,code:'KeyW'}))`);
+await waitFor(`document.querySelectorAll('.cw-tab').length===1`);
+await evaluate(`document.querySelector('.cw-tabs').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
+await waitFor(`document.querySelectorAll('.cw-tab').length===2`);
+await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,code:'KeyW'}))`);
+await waitFor(`document.querySelectorAll('.cw-tab').length===1`);
+await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,shiftKey:true,code:'KeyT'}))`);
+await waitFor(`document.querySelectorAll('.cw-tab').length===2`);
+await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,code:'KeyW'}))`);
+await waitFor(`document.querySelectorAll('.cw-tab').length===1`);
+// All content kinds use the shared web list and its actions.
+await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'open-canvas',kind:'emails'})`);
+await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelector('[aria-label="Email canvas"] [aria-label="Document layout"]')`);
+await click('[aria-label="Email canvas"] button[title="Table view"]');
+await click('[aria-label="Email canvas"] [aria-label="Reuse window across navigation"]');
+const pinned = await evaluate(`window.__CANVAS_DESKTOP_UI__.snapshot().layouts[JSON.stringify(['universe','context','context','/work/customer-foo/ops/snow-12345'])].frames.find(f=>f.pinned)`);
+await navigateTo('/work/customer-foo/ops/snow-12346');
+await waitFor(`document.querySelectorAll('.cw-window').length===1 && document.querySelector('[aria-label="Email canvas"] .cw-location').textContent.includes('snow-12346')`);
+assert.equal(await evaluate(`window.__CANVAS_DESKTOP_UI__.snapshot().layouts[JSON.stringify(['universe','context','context','/work/customer-foo/ops/snow-12346'])].frames[0].id`),pinned.id);
+assert.equal(pinned.tabs[0].documentLayout,'table');
+await waitFor(`document.querySelector('[aria-label="Email canvas"] button[title="Table view"][aria-pressed="true"]')`);
+// A delayed native focus event can leave a selection pointing at a closed window.
+// Reopening must preserve every frame and keep the menu interactive.
+const savedLayouts = await evaluate(`window.__CANVAS_DESKTOP_UI__.snapshot().layouts`);
+await evaluate(`(()=>{const key='desktop.shell.v2:test';const saved=JSON.parse(localStorage.getItem(key));for(const layout of Object.values(saved.layouts))layout.focused='closed-window';localStorage.setItem(key,JSON.stringify(saved));})()`);
 await cmd('Page.reload');
-await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-tab').length===3`);
-// Detach and close a tab, including the last tab in its own window.
-await click('[aria-label="Move tab to its own window"]');
-await waitFor(`document.querySelectorAll('.cw-window').length===3`);
-await click('[aria-label="Close Emails tab"]');
+await waitFor(`document.querySelector('[aria-label="Reuse window across navigation"][aria-pressed="true"]')`);
+await waitFor(`document.querySelector('.desktop-navigation [data-shell="rail"]') && window.__CANVAS_DESKTOP_UI__`);
+const repairedLayouts = await evaluate(`JSON.parse(localStorage.getItem('desktop.shell.v2:test')).layouts`);
+for (const [key, layout] of Object.entries(savedLayouts)) {
+ assert.deepEqual(repairedLayouts[key].frames, layout.frames);
+ assert.equal(repairedLayouts[key].focused, layout.frames[0]?.id || '');
+}
+await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,altKey:true,code:'Digit1'}))`);
+await waitFor(`window.__CANVAS_DESKTOP_UI__.snapshot().menu==='m1' && document.querySelector('.desktop-navigation')`);
+assert.ok(!pageErrors.some(error=>error.includes('Invalid focused canvas window')),pageErrors.join('\n'));
+
+await navigateTo('/work/customer-foo/ops/snow-12345');
 await waitFor(`document.querySelectorAll('.cw-window').length===2`);
-await click('[aria-label="Close Notes tab"]');
-await waitFor(`document.querySelectorAll('.cw-window').length===1`);
-// Search filters a schema canvas; the fixture answers `q` with a substring match.
-await evaluate(`Array.from(document.querySelectorAll('.tb-kind-grid button')).find(b=>b.textContent.includes('Messages')).click()`);
-await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelectorAll('.cw-document').length===2`);
-await fill('input[aria-label="Search this canvas"]','rollback');
-await waitFor(`document.querySelectorAll('.cw-document').length===1`);
-await fill('input[aria-label="Search this canvas"]','');
-await waitFor(`document.querySelectorAll('.cw-document').length===2`);
-await click('[aria-label="Close Messages tab"]');
-await waitFor(`document.querySelectorAll('.cw-window').length===1`);
+assert.ok(documentQueries.some(q=>q.allOf==='data/schema/message/email'),JSON.stringify(documentQueries));
+await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'show-toolbox',mode:'context'})`);
+await waitFor(`document.querySelector('.tb-launcher')`);
 // Immediate controls do not need network or native IPC. Observe a paint after
 // the click; this is browser scheduling, not a native end-to-end latency claim.
 const timings=[];
@@ -153,10 +174,10 @@ await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'show-toolbox',mode:
 await new Promise(r=>setTimeout(r,180));
 let shot=await cmd('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,'canvas-desktop-foundation.png'),Buffer.from(shot.data,'base64'));
 await click('[aria-label="Desktop settings"]');
-await evaluate(`(()=>{const select=document.querySelector('[aria-label="Desktop preferences"] select');const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set;setter.call(select,'top');select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+await waitFor(`document.querySelector('[aria-label="Desktop preferences"]')`);
+await evaluate(`(()=>{const select=[...document.querySelectorAll('[aria-label="Desktop preferences"] select')].find(s=>s.value==='automatic');select.value='manual';select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+assert.equal(await evaluate('window.__CANVAS_DESKTOP_UI__.snapshot().autoTile'),false);
 await click('[aria-label="Close preferences"]');
-await waitFor(`document.querySelector('.mm-top')`);
-shot=await cmd('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(output,'canvas-desktop-top-menu.png'),Buffer.from(shot.data,'base64'));
 // A narrow viewport keeps the menu and toolbox operable.
 await cmd('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false});
 await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'show-toolbox',mode:'global'})`);
@@ -167,7 +188,7 @@ await cmd('Emulation.clearDeviceMetricsOverride');
 await cmd('Page.navigate',{url:'http://127.0.0.1:1430/workspaces'});
 await waitFor(`document.body.innerText.includes('Universe') && document.querySelector('.desktop-return')`);
 assert.equal(await evaluate('localStorage.getItem("authToken")'),'canvas-test-token');
-console.log('PASS: desktop login, web UI canvas page, contextual queries, tabs, detach, per-path restoration, reload, search, layout settings, narrow toolbox and shared web handoff.');
+console.log('PASS: shared menus and document views, schema filtering, pinned frame reuse, stale-focus repair on reload, manual tiling preference, narrow toolbox and web handoff.');
 console.log('Toolbox click → next animation frame (browser only), ms:', timings.map(t=>t.toFixed(1)).join(', '));
 console.log('Initial desktop JS:', jsResources.join(', '));
 ws.close();

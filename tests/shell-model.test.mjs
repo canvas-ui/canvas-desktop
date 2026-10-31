@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, navigate, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu, openTab, patchTab, browserCanvas, webCanvas, webTitle, routeScope, documentLocation } from '../src/shell/model.ts';
+import { initialState, navigate, navigateLocation, focusFrame, scopeKey, addCanvas, updateLayout, closeTab, detachTab, parseState, cycleMenu, openTab, patchTab, browserCanvas, webCanvas, webTitle, routeScope, documentLocation, tabAction, moveTab, closeSavedTab } from '../src/shell/model.ts';
 
 const incident = { mode: 'explorer', workspace: 'universe', tree: 'context', treeType: 'context', path: '/work/customer-foo/ops/snow-12345' };
 test('path changes restore independent windows and tabs without mutating the previous layout', () => {
@@ -45,7 +45,7 @@ test('global toolbox state survives context changes and menu cycling reaches all
 });
 test('unsupported or corrupt layouts fail without silently resetting saved data', () => {
   assert.throws(() => parseState('{bad json'));
-  assert.throws(() => parseState(JSON.stringify({ ...initialState(), version: 2 })));
+  assert.throws(() => parseState(JSON.stringify({ ...initialState(), version: 999 })));
   assert.throws(() => parseState(JSON.stringify({ ...initialState(), gap: -1 })));
   const state = navigate(initialState(), incident);
   state.layouts[scopeKey(incident)].frames.push(state.layouts[scopeKey(incident)].frames[0]);
@@ -94,4 +94,86 @@ test('web UI routes become tabs with readable titles and tree paths map back to 
   let state = navigate(initialState(), incident);
   state = updateLayout(state, scopeKey(incident), layout => openTab(layout, tab));
   assert.deepEqual(parseState(JSON.stringify(state)), state);
+});
+
+test('pinned frames follow paths with their tabs and placement identity, including returning to an existing layout', () => {
+  let state = navigate(initialState(), incident);
+  const firstKey = scopeKey(incident);
+  state = updateLayout(state, firstKey, layout => addCanvas(layout, 'emails'));
+  const pinned = state.layouts[firstKey].frames[1];
+  pinned.pinned = true;
+  pinned.tabs[0].documentLayout = 'table';
+  const nextScope = { ...incident, path: '/next' };
+  state = navigate(state, nextScope);
+  assert.deepEqual(state.layouts[scopeKey(nextScope)].frames, [pinned]);
+  assert.equal(state.layouts[firstKey].frames.length, 1);
+  state = parseState(JSON.stringify(state));
+  state = navigate(state, incident);
+  assert.equal(state.layouts[firstKey].frames[0].id, pinned.id);
+  assert.equal(state.layouts[firstKey].frames[0].tabs[0].documentLayout, 'table');
+  assert.equal(state.layouts[firstKey].frames.length, 2);
+  assert.equal(state.layouts[scopeKey(nextScope)].frames.length, 0);
+  state = updateLayout(state, firstKey, layout => ({ ...layout, frames: layout.frames.map(frame => ({ ...frame, pinned: false })) }));
+  assert.equal(navigate(state, nextScope).layouts[scopeKey(nextScope)].frames.length, 0);
+});
+
+test('in-page searches preserve their query without replacing a pinned canvas', () => {
+  let state = navigate(initialState(), incident);
+  const key = scopeKey(incident), frame = state.layouts[key].frames[0];
+  frame.pinned = true;
+  const location = '/workspaces/universe/trees/context/path/work?q=latency#results';
+  state = navigateLocation(state, incident, location, frame.id, frame.active);
+  assert.equal(state.layouts[key].frames[0].tabs[0].location, location);
+  assert.equal(state.layouts[key].frames[0].id, frame.id);
+});
+
+test('delayed focus notifications from closed and hidden windows cannot corrupt the selection', () => {
+  const initial = navigate(initialState(), incident), key = scopeKey(incident);
+  const original = initial.layouts[key].frames[0];
+  let state = updateLayout(initial, key, layout => addCanvas(layout, 'emails'));
+  const other = state.layouts[key].frames[1];
+  state = updateLayout(state, key, layout => closeTab(layout, original.id, original.active));
+  assert.equal(focusFrame(state, original.id), state);
+  assert.equal(parseState(JSON.stringify(state)).layouts[key].focused, other.id);
+  const elsewhere = navigate(state, { ...incident, path: '/elsewhere' });
+  assert.equal(focusFrame(elsewhere, other.id), elsewhere);
+  const closed = updateLayout(state, key, layout => closeTab(layout, other.id, other.active));
+  assert.equal(focusFrame(closed, other.id), closed);
+  assert.equal(parseState(JSON.stringify(closed)).layouts[key].focused, '');
+});
+
+test('browser tab commands create, cycle, close adjacent and reopen the same tab', () => {
+  let state = navigate(initialState(), incident);
+  const key = scopeKey(incident), original = state.layouts[key].frames[0];
+  state = tabAction(state, 'new-tab', original.id);
+  const browser = state.layouts[key].frames[0].tabs[1];
+  assert.equal(browser.kind, 'browser');
+  state = tabAction(state, 'previous-tab', original.id);
+  assert.equal(state.layouts[key].frames[0].active, original.active);
+  state = closeSavedTab(state, key, original.id, original.active);
+  assert.equal(state.layouts[key].frames[0].active, browser.id);
+  state = tabAction(state, 'reopen-tab');
+  assert.equal(state.layouts[key].frames[0].tabs[0].id, original.active);
+  state = tabAction(state, 'new-window');
+  assert.equal(state.layouts[key].frames.length, 2);
+  assert.deepEqual(parseState(JSON.stringify(state)), state);
+});
+test('dragging tabs preserves identity across ordering and window merges', () => {
+  let layout = addCanvas(navigate(initialState(), incident).layouts[scopeKey(incident)], 'terminal');
+  const [first, second] = layout.frames;
+  layout = openTab(layout, browserCanvas('https://example.com'), { frame: first.id });
+  const tab = layout.frames[0].tabs[1];
+  layout = moveTab(layout, first.id, tab.id, first.id, first.active);
+  assert.equal(layout.frames[0].tabs[0].id, tab.id);
+  layout = moveTab(layout, first.id, tab.id, second.id);
+  assert.equal(layout.frames[1].tabs[1].id, tab.id);
+  assert.equal(layout.focused, second.id);
+  assert.equal(layout.frames[0].tabs.length, 1);
+});
+
+test('a shortcut from a dormant native window cannot close the current context tab', () => {
+  const original = navigate(initialState(), incident);
+  const frame = original.layouts[scopeKey(incident)].frames[0];
+  const current = navigate(original, { ...incident, path: '/different' });
+  assert.equal(tabAction(current, 'close-tab', frame.id), current);
 });

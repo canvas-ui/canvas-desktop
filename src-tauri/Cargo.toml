@@ -30,6 +30,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 dirs = "5"
 anyhow = "1"
 tauri-plugin-dialog = "2"
+portable-pty = "0.9"
+libc = "0.2"
 
 
 # time 0.3.48 breaks cookie + tauri-utils on rustc 1.96+ (time-rs/time#783)
