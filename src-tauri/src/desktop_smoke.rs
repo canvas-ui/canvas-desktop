@@ -8,7 +8,7 @@ fn desktop_test_snapshot(app: tauri::AppHandle) -> serde_json::Value {
         let position = window.outer_position().ok();
         let size = window.inner_size().ok();
         let webviews: Vec<String> = window.webviews().iter().map(|w| w.label().to_string()).collect();
-        serde_json::json!({ "id": id, "title": window.title().ok(), "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height), "webviews": webviews })
+        serde_json::json!({ "id": id, "key": crate::desktop::geometry_key(&app, id), "prepared": crate::desktop::is_prepared(&app, id), "title": window.title().ok(), "visible": window.is_visible().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false), "minimized": window.is_minimized().unwrap_or(false), "x": position.map(|p| p.x), "y": position.map(|p| p.y), "width": size.map(|s| s.width), "height": size.map(|s| s.height), "webviews": webviews })
     }).collect::<Vec<_>>())
 }
 #[tauri::command]
@@ -46,8 +46,40 @@ async fn desktop_test_place(
     Ok(())
 }
 #[tauri::command]
-async fn desktop_test_url_close(app: tauri::AppHandle, window: String, tab: String) -> Result<(), String> {
+async fn desktop_test_url_close(
+    app: tauri::AppHandle,
+    window: String,
+    tab: String,
+) -> Result<(), String> {
     crate::desktop::urls::close_fixture_page(app, window, tab).await
+}
+#[tauri::command]
+async fn desktop_test_widget(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, id);
+        return Err("GTK allocations are available on Linux".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let view = app.get_webview(&id).ok_or("Fixture view is missing")?;
+        let (sender, mut receiver) = tauri::async_runtime::channel(1);
+        view.with_webview(move |platform| {
+        use gtk::prelude::*;
+        let mut widget = Some(platform.inner().upcast::<gtk::Widget>());
+        let mut nodes = Vec::new();
+        while let Some(view) = widget {
+            let allocation = view.allocation();
+            nodes.push(serde_json::json!({"type":view.type_().name(),"height":allocation.height(),"y":allocation.y(),"request":view.height_request(),"expand":view.property::<bool>("vexpand"),"visible":view.is_visible()}));
+            widget = view.parent();
+        }
+        let _ = sender.try_send(serde_json::json!(nodes));
+    }).map_err(|e| e.to_string())?;
+        receiver.recv().await.ok_or("No GTK allocation".into())
+    }
 }
 #[tauri::command]
 async fn desktop_test_page_eval(
@@ -85,13 +117,13 @@ pub fn run() {
         .manage(crate::terminal::TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             crate::config::load_remotes, crate::tls::activate_tls,
-            crate::desktop::desktop_sync, crate::desktop::desktop_tile,
+            crate::desktop::desktop_sync, crate::desktop::desktop_prepare, crate::desktop::desktop_frame, crate::desktop::desktop_tile,
             crate::desktop::desktop_hide_surfaces,
             crate::desktop::desktop_reveal_menu,
             crate::desktop::urls::desktop_url_open, crate::desktop::urls::desktop_url_show, crate::desktop::urls::desktop_url_hide,
             crate::desktop::urls::desktop_url_action,
-            crate::terminal::terminal_list, crate::terminal::terminal_create, crate::terminal::terminal_read, crate::terminal::terminal_write, crate::terminal::terminal_resize, crate::terminal::terminal_close, crate::terminal::terminal_close_all,
-            desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_page_eval, desktop_test_url_close, desktop_test_result
+            crate::terminal::terminal_list, crate::terminal::terminal_create, crate::terminal::terminal_subscribe, crate::terminal::terminal_unsubscribe, crate::terminal::terminal_read, crate::terminal::terminal_write, crate::terminal::terminal_resize, crate::terminal::terminal_close, crate::terminal::terminal_close_all,
+            desktop_test_snapshot, desktop_test_place, desktop_test_window_state, desktop_test_page_eval, desktop_test_url_close, desktop_test_widget, desktop_test_result
         ])
         .on_window_event(crate::desktop::window_event)
         .setup(move |app| {

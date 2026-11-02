@@ -372,16 +372,91 @@ pub(super) fn layout(app: &tauri::AppHandle, window: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Linux: the window's vertical GTK box decides the split. A non-expanding
-/// chrome webview with a fixed height request leaves the rest to the page.
+/// WebKit's natural height follows its document, so GTK packing alone can give
+/// the host its previous full-window height and starve the website. Allocate
+/// the measured chrome and the remaining page area explicitly on each resize.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct GtkLayout {
+    host: glib::WeakRef<gtk::Widget>,
+    chrome: i32,
+    full: bool,
+}
+#[cfg(target_os = "linux")]
+thread_local! {
+    static GTK_LAYOUTS: std::cell::RefCell<BTreeMap<usize, std::rc::Rc<std::cell::RefCell<GtkLayout>>>> = Default::default();
+}
+#[cfg(target_os = "linux")]
+fn allocate_gtk(parent: &gtk::Box, layout: &GtkLayout, allocation: &gtk::Allocation) {
+    use gtk::prelude::*;
+    let Some(host) = layout.host.upgrade() else {
+        return;
+    };
+    let height = if layout.full {
+        allocation.height()
+    } else {
+        layout.chrome.min(allocation.height())
+    };
+    host.size_allocate(&gtk::Allocation::new(
+        allocation.x(),
+        allocation.y(),
+        allocation.width(),
+        height,
+    ));
+    if !layout.full {
+        for child in parent
+            .children()
+            .into_iter()
+            .filter(|child| child != &host && child.is_visible())
+        {
+            child.size_allocate(&gtk::Allocation::new(
+                allocation.x(),
+                allocation.y() + height,
+                allocation.width(),
+                (allocation.height() - height).max(1),
+            ));
+        }
+    }
+}
 #[cfg(target_os = "linux")]
 fn pack(webview: &Webview, expand: bool, height: f64) {
-    use gtk::prelude::{BoxExt, Cast, WidgetExt};
+    use gtk::prelude::*;
     let _ = webview.with_webview(move |platform| {
         let view = platform.inner();
         if let Some(parent) = view.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) {
             parent.set_child_packing(&view, expand, true, 0, gtk::PackType::Start);
+            if height > 0.0 {
+                let key = parent.as_ptr() as usize;
+                let layout = GTK_LAYOUTS.with(|layouts| {
+                    layouts
+                        .borrow_mut()
+                        .entry(key)
+                        .or_insert_with(|| {
+                            let layout =
+                                std::rc::Rc::new(std::cell::RefCell::new(GtkLayout::default()));
+                            let shared = layout.clone();
+                            parent.connect_size_allocate(move |parent, allocation| {
+                                allocate_gtk(parent, &shared.borrow(), allocation)
+                            });
+                            parent.connect_destroy(move |_| {
+                                GTK_LAYOUTS.with(|layouts| {
+                                    layouts.borrow_mut().remove(&key);
+                                });
+                            });
+                            layout
+                        })
+                        .clone()
+                });
+                *layout.borrow_mut() = GtkLayout {
+                    host: view.clone().upcast::<gtk::Widget>().downgrade(),
+                    chrome: height.round() as i32,
+                    full: expand,
+                };
+                allocate_gtk(&parent, &layout.borrow(), &parent.allocation());
+                parent.queue_resize();
+            }
         }
+        view.set_vexpand(expand);
         view.set_size_request(-1, if expand { -1 } else { height.round() as i32 });
     });
 }

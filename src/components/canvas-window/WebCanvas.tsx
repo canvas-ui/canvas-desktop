@@ -1,5 +1,5 @@
 import { ContentWindowContext } from '@web/components/common/content-window-context';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   NavigationType, Routes, createPath, parsePath,
   UNSAFE_LocationContext as LocationContext, UNSAFE_NavigationContext as NavigationContext, UNSAFE_RouteContext as RouteContext,
@@ -68,19 +68,19 @@ function WebMenu({ level, setLevel, toolbox }: MenuOptions) {
   return <div className="desktop-navigation"><MenuBar />{level !== 'hidden' && level !== 'm0' && <div className="desktop-navigation-panel">{level === 'm2' ? <M2Content /> : section === 'contexts' ? <ContextList /> : section === 'agents' ? <AgentList /> : section === 'admin' ? <AdminMenu /> : section === 'settings' ? <SettingsMenu /> : section === 'apps' ? <AppsMenu /> : <WorkspaceList />}</div>}</div>;
 }
 
-export default function WebCanvas({ location, onNavigate, onBack, open, menu, kind, windowView }: { location: string; onNavigate: (next: string) => void; onBack: (steps: number) => void; open: WebOpen; menu?: MenuOptions; kind?: CanvasKind; windowView?: React.ContextType<typeof ContentWindowContext> }) {
+export default memo(function WebCanvas({ location, onNavigate, onBack, open, menu, kind, windowView }: { location: string; onNavigate: (next: string) => void; onBack: (steps: number) => void; open: WebOpen; menu?: MenuOptions; kind?: CanvasKind; windowView?: React.ContextType<typeof ContentWindowContext> }) {
   const container = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState<number>();
+  const [compact, setCompact] = useState(false);
   useEffect(() => {
     if (!container.current) return;
-    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width));
+    const observer = new ResizeObserver(entries => setCompact(entries[0].contentRect.width < 720));
     observer.observe(container.current);
     return () => observer.disconnect();
   }, []);
   const hostedView = useMemo(() => {
     const schemas: Partial<Record<CanvasKind, string>> = { emails: 'data/schema/message/email', messages: 'data/schema/message', notes: 'data/schema/note', files: 'data/schema/file', tabs: 'data/schema/tab' };
-    return windowView ? { ...windowView, width, schema: kind ? schemas[kind] : undefined } : null;
-  }, [windowView, width, kind]);
+    return windowView ? { ...windowView, compact, schema: kind ? schemas[kind] : undefined } : null;
+  }, [windowView, compact, kind]);
   const loc = useMemo<Location>(() => {
     const p = parsePath(location);
     return { pathname: p.pathname || '/', search: p.search || '', hash: p.hash || '', state: null, key: location };
@@ -114,4 +114,4 @@ export default function WebCanvas({ location, onNavigate, onBack, open, menu, ki
       </NavigationContext.Provider>
     </CanvasPinsProvider></NotificationsProvider></ToastContainer></ThemeProvider></ContentWindowContext.Provider>
   </div>;
-}
+});

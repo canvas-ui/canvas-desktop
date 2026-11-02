@@ -16,7 +16,9 @@ appropriate host surface. Native surface creation belongs in the Rust host;
 widgets should remain usable without Tauri so a later phone host can reuse them.
 The descriptor list is an extension catalog, not a dynamic plugin loader.
 
-Use `store.update(previous => next)` with the pure model operations. Never mutate
+Use `store.dispatch(action)` with the shared action reducer. Native windows
+apply actions optimistically and send them to the menu host, which is the sole
+layout writer and broadcasts acknowledged snapshots. Never mutate
 snapshots, save credentials in layouts, or use an arbitrary display label as a
 path identity. `scopeKey()` deliberately separates workspace, tree, tree type,
 and path. Native window identity uses the frame ID so pins can move between paths without replacing a window. Storage failures are surfaced instead of replacing saved layouts.

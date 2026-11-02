@@ -20,7 +20,10 @@ token. “More sign-in options” opens the shared web login. The main menu beco
 a compact native window; one content canvas opens for the selected tree path,
 and the toolbox has its own launcher window beside it. Closing the main menu
 keeps the tray running. The tray provides menu, mounts, minimize all, settings,
-logout, restart UI, and quit controls.
+logout, restart UI, and two quit controls. **Quit** leaves mounts running.
+**Quit and unmount all mounts (N)** stops desktop-managed mount processes and
+unmounts the current user's Canvas FUSE mounts before exiting. The count refreshes
+in the background. If cleanup fails, Canvas stays open and displays the error.
 
 Every native window is frameless: the canvas tab strip is its title bar (drag it,
 double-click to maximize, window buttons on the right, invisible resize handles
@@ -106,7 +109,9 @@ Each owns its view and stylesheet. The host/state contract is
 `src/shell/integration.ts`; pure layout operations are in `src/shell/model.ts`;
 frameless window chrome (drag, resize edges, window buttons) is `src/shell/chrome.tsx`.
 Page webviews are managed by `src-tauri/src/desktop/urls.rs`; on Linux the window's
-vertical GTK box splits chrome and page, elsewhere the page is placed by bounds.
+GTK box allocates the measured chrome height to the host and the remaining
+height to the website, including after tab detachment and window resizing.
+Other platforms place the page by bounds.
 Capabilities are granted per webview label (`main`, `canvas-*`, `toolbox`), so page
 webviews (`url-*`) never reach the IPC layer.
 See [component integration](src/components/README.md) for extension details.
@@ -125,9 +130,22 @@ KDE/GNOME workspace behavior still need desktop-session validation.
 ## Performance and verification
 
 Menu, tab, and toolbox state changes happen locally, without waiting for Rust or
-HTTP. Editors and the full web application are lazy chunks. Socket loading is
-also deferred. Window reconciliation is serialized and superseded work is
-skipped; geometry writes are debounced outside interaction handlers.
+HTTP. Pages, applets, editors and the full web application load on demand.
+One hidden renderer preloads the shared UI for the next canvas. It stays unbound
+until needed, loads no documents, and starts no applets. Logical frame IDs retain
+their geometry across renderer assignment and process restarts.
+Native layout actions have one authoritative writer in the menu host, with
+optimistic updates and acknowledged snapshots in the other windows. Hidden
+canvases retain stable scope/router identities when the active tree path changes.
+Unchanged layout subtrees retain their React identity, and resizing only updates
+the hosted page when it crosses the compact-layout threshold. Terminal output
+uses ordered Tauri channels; session lists refresh on lifecycle events rather
+than polling. Window reconciliation is serialized and superseded work is
+skipped. Title and ordinary focus changes bypass monitor/KWin reconciliation;
+already-visible surfaces are not shown again. Geometry writes are debounced
+outside interaction handlers. The toolbox has a transparent native window with
+a round launcher; embedded Canvas pages use the shared address/search control
+and keep content views in its Views menu.
 
 ```sh
 npm run build:frontend
@@ -248,22 +266,23 @@ Original versioned filenames remain available for pinned downloads.
 ## Linux / NVIDIA blank window
 
 Before GTK/WebKit starts, desktop applies `WEBKIT_DISABLE_DMABUF_RENDERER=1`
-and `WEBKIT_DISABLE_COMPOSITING_MODE=1` when a proprietary NVIDIA driver is
-detected via `/proc/driver/nvidia/version` or `__GLX_VENDOR_LIBRARY_NAME=nvidia`.
-Other drivers keep WebKit accelerated compositing enabled by default. Explicit values for either variable are preserved. When
-`CLUTTER_BACKEND=x11` is set, desktop also defaults `GDK_BACKEND=x11`; an explicit
-GTK backend setting takes precedence. These compatibility defaults apply only on Linux.
+when a proprietary NVIDIA driver is detected via `/proc/driver/nvidia/version`
+or `__GLX_VENDOR_LIBRARY_NAME=nvidia`. Accelerated compositing remains enabled
+for performance and transparent surfaces. Explicit environment values are
+preserved. When `CLUTTER_BACKEND=x11` is set, desktop also defaults
+`GDK_BACKEND=x11`; an explicit GTK backend setting takes precedence.
 
-For an older build, launch with the same workaround:
+To isolate a driver-related Wayland blank surface, launch an X11 session of the
+app with DMA-BUF disabled:
 
 ```sh
-GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 npm run tauri dev
+GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri dev
 ```
 
-For an installed app, replace `npm run tauri dev` with `canvas-desktop`. Quit
-any existing tray instance before relaunching. The fallback disables accelerated
-WebKit compositing; set `WEBKIT_DISABLE_COMPOSITING_MODE=0` to opt back in when
-your driver supports it.
+Replace `npm run tauri dev` with `canvas-desktop` for an installed build. Quit
+any existing tray instance before relaunching. As a diagnostic last resort,
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` requests software compositing; this is an
+explicit opt-in because it reduces rendering performance and can affect alpha.
 
 ## Rebuilding the desktop UI
 

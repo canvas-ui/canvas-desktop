@@ -5,8 +5,8 @@ mod desktop;
 mod desktop_smoke;
 mod fuse;
 mod runtime_path;
-mod tls;
 mod terminal;
+mod tls;
 use tauri::{Emitter, Manager};
 
 pub(crate) fn open_main_ui(app: &tauri::AppHandle, restart: bool) -> tauri::Result<()> {
@@ -40,6 +40,7 @@ pub fn run() {
         .manage(desktop::DesktopState::default())
         .manage(desktop::urls::UrlState::default())
         .manage(terminal::TerminalState::default())
+        .manage(fuse::TrayState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -57,6 +58,8 @@ pub fn run() {
             fuse::mount_status,
             browser::open_browser,
             desktop::desktop_sync,
+            desktop::desktop_prepare,
+            desktop::desktop_frame,
             desktop::desktop_tile,
             desktop::desktop_hide_surfaces,
             desktop::desktop_reveal_menu,
@@ -64,7 +67,14 @@ pub fn run() {
             desktop::urls::desktop_url_open,
             desktop::urls::desktop_url_show,
             desktop::urls::desktop_url_hide,
-            terminal::terminal_list, terminal::terminal_create, terminal::terminal_read, terminal::terminal_write, terminal::terminal_resize, terminal::terminal_close, terminal::terminal_close_all,
+            terminal::terminal_list,
+            terminal::terminal_create,
+            terminal::terminal_subscribe,
+            terminal::terminal_unsubscribe,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
+            terminal::terminal_close_all,
             desktop::urls::desktop_url_action
         ])
         .on_window_event(|window, event| {
@@ -91,7 +101,8 @@ pub fn run() {
                             eprintln!("Unable to open Canvas UI: {error}");
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => fuse::quit(app),
+                    "quit-unmount" => fuse::quit_and_unmount(app),
                     "menu" | "settings" | "mounts" | "logout" => {
                         if open_main_ui(app, false).is_ok() {
                             if let Some(main) = app.get_webview_window("main") {
@@ -121,6 +132,7 @@ pub fn run() {
                 })
                 .build(app)?;
             fuse::rebuild_tray_menu(app.handle())?;
+            fuse::watch_mount_count(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -130,22 +142,13 @@ pub fn run() {
 
 #[cfg(target_os = "linux")]
 fn configure_linux_renderer() {
-    // Keep accelerated compositing on healthy drivers. The old tray prototype
-    // disabled it on every Linux machine, limiting the desktop's paint budget.
-    // Retain the blank-webview workaround on proprietary NVIDIA systems;
-    // explicit environment settings remain authoritative on every driver.
+    // NVIDIA's DMA-BUF path can produce blank surfaces. Disable that path while
+    // retaining accelerated compositing and alpha; explicit settings win.
     // https://github.com/tauri-apps/tauri/issues/9394
     let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists()
         || std::env::var("__GLX_VENDOR_LIBRARY_NAME").as_deref() == Ok("nvidia");
-    if nvidia {
-        for key in [
-            "WEBKIT_DISABLE_DMABUF_RENDERER",
-            "WEBKIT_DISABLE_COMPOSITING_MODE",
-        ] {
-            if std::env::var_os(key).is_none() {
-                std::env::set_var(key, "1");
-            }
-        }
+    if nvidia && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     // CLUTTER_BACKEND does not select GTK's display backend. Honor an existing
     // X11 preference without overriding a user's explicit GDK_BACKEND choice.

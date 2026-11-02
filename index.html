@@ -20,6 +20,7 @@
     -->
     <script>
       (function () {
+        document.documentElement.dataset.surface = new URLSearchParams(location.search).get('surface') || 'desktop'
         try {
           var connection = JSON.parse(localStorage.getItem('canvas.desktop.connection') || 'null')
           var themeKey = connection ? 'canvas.desktop.session:' + encodeURIComponent(connection.url) + ':canvas.ui.theme' : 'canvas.ui.theme'

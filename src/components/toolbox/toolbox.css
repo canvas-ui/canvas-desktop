@@ -2,3 +2,5 @@
 @keyframes tb-enter{from{opacity:.5;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .ds-native .tb-panel>header{cursor:grab;user-select:none}.ds-native .tb-panel>header:active{cursor:grabbing}
 @media(max-width:650px){.tb-container{right:16px;bottom:18px}.tb-launcher-hint{display:none}}@media(prefers-reduced-motion:reduce){.tb-panel{animation:none}}
+
+.ds-root .tb-launcher{border-radius:50%;aspect-ratio:1;flex-shrink:0;background:rgb(36 47 30 / 88%)!important}.ds-native.ds-surface-toolbox .tb-panel{background:rgb(36 47 30 / 94%)}

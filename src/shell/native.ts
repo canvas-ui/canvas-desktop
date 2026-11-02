@@ -15,7 +15,7 @@ export function syncWindows(state: DesktopState, namespace: string) {
   const key = state.scope ? scopeKey(state.scope) : '';
   const layout = state.layouts[key];
   const request = { browserTabs: Object.values(state.layouts).flatMap(layout => layout.frames.flatMap(frame => frame.tabs.filter(tab => tab.kind === 'browser').map(tab => tab.id))), namespace, scope: key, frames: layout?.frames.map(frame => ({ id: frame.id, kind: frame.tabs.find(tab => tab.id === frame.active)?.kind || 'content', pinned: !!frame.pinned, title: frame.tabs.find(tab => tab.id === frame.active)?.title || 'Canvas' })) || [], focused: layout?.focused || '', arrangement: layout?.arrangement || 'columns', gap: state.gap, autoTile: state.autoTile, placement: state.placement, menu: state.menu, toolboxOpen: state.toolbox.open };
-  const result = pending.catch(() => {}).then(async () => { if (current === revision) await invoke('desktop_sync', { request }); });
+  const result = pending.catch(() => {}).then(async () => { if (current === revision && await invoke<boolean>('desktop_sync', { request })) await invoke('desktop_prepare', { namespace }); });
   pending = result;
   return result;
 }

@@ -3,10 +3,122 @@
 use crate::config::{self, DesktopConfig, Mount};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 pub const TRAY_ID: &str = "canvas-tray";
+#[derive(Default)]
+pub struct TrayState {
+    quitting: AtomicBool,
+    unmount_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    count: Mutex<Option<usize>>,
+}
+
+fn fuse_status_with(
+    run: &impl Fn(&str, &[String]) -> Result<String, String>,
+) -> Result<Vec<Value>, String> {
+    serde_json::from_str(&run("canvas-fuse", &["status".into(), "--json".into()])?)
+        .map_err(|e| e.to_string())
+}
+fn active_paths(mounts: &[Value]) -> BTreeSet<String> {
+    mounts
+        .iter()
+        .filter(|m| m["mounted"] == true || m["alive"] == true)
+        .filter_map(|m| m["mountpoint"].as_str().map(String::from))
+        .collect()
+}
+fn delete_processes(
+    processes: &[Value],
+    run: &impl Fn(&str, &[String]) -> Result<String, String>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for process in processes {
+        let id = process["pm_id"]
+            .as_u64()
+            .map(|id| id.to_string())
+            .or_else(|| process["name"].as_str().map(String::from));
+        if let Some(id) = id {
+            if let Err(error) = run("pm2", &["delete".into(), id]) {
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+fn unmount_all_with(
+    cfg: &DesktopConfig,
+    processes: &[Value],
+    run: &impl Fn(&str, &[String]) -> Result<String, String>,
+) -> Result<(), String> {
+    // Capture paths before stopping PM2: a daemon can remove its state on exit.
+    let mut paths = active_paths(&fuse_status_with(run)?);
+    let processes: Vec<_> = processes
+        .iter()
+        .filter(|p| cfg.mounts.iter().any(|m| matches_process(p, m)))
+        .cloned()
+        .collect();
+    for mount in &cfg.mounts {
+        if processes.iter().any(|p| matches_process(p, mount)) {
+            paths.insert(
+                config::mount_path(cfg, mount)?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    let mut errors = Vec::new();
+    if let Err(error) = delete_processes(&processes, run) {
+        errors.push(error);
+    }
+    for path in paths {
+        if let Err(error) = run("canvas-fuse", &["unmount".into(), path]) {
+            errors.push(error);
+        }
+    }
+    match fuse_status_with(run) {
+        Ok(mounts) => {
+            let remaining = active_paths(&mounts);
+            if !remaining.is_empty() {
+                errors.push(format!(
+                    "Mounts still active: {}",
+                    remaining.into_iter().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+        Err(error) => errors.push(error),
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+fn unmount_all() -> Result<(), String> {
+    let _guard = config::CONFIG_LOCK.lock().map_err(|e| e.to_string())?;
+    let cfg = config::load()?;
+    if binary("canvas-fuse").is_err() && cfg.mounts.is_empty() {
+        return Ok(());
+    }
+    let processes = if cfg.mounts.is_empty() || binary("pm2").is_err() {
+        vec![]
+    } else {
+        pm2_list()?
+    };
+    unmount_all_with(&cfg, &processes, &run)
+}
 
 fn binary(name: &str) -> Result<PathBuf, String> {
     Some(crate::runtime_path::path())
@@ -193,8 +305,14 @@ pub fn has_active_mounts() -> Result<bool, String> {
     }
     Ok(false)
 }
-fn action(index: usize, action: &str) -> Result<(), String> {
+fn action(app: &AppHandle, index: usize, action: &str) -> Result<(), String> {
     let _guard = config::CONFIG_LOCK.lock().map_err(|e| e.to_string())?;
+    if app
+        .try_state::<TrayState>()
+        .is_some_and(|state| state.quitting.load(Ordering::SeqCst))
+    {
+        return Err("Canvas is unmounting and quitting".into());
+    }
     let cfg = config::load()?;
     let m = cfg.mounts.get(index).ok_or("Unknown mount")?;
     let name = process_name(m);
@@ -218,13 +336,7 @@ fn action(index: usize, action: &str) -> Result<(), String> {
     }
     // Recreate legacy services under their readable name, and remove both if
     // an interrupted migration left duplicate records. No new parallel mount.
-    for process in &existing {
-        if let Some(id) = process["pm_id"].as_u64() {
-            run("pm2", &["delete".into(), id.to_string()])?;
-        } else if let Some(old_name) = process["name"].as_str() {
-            run("pm2", &["delete".into(), old_name.into()])?;
-        }
-    }
+    delete_processes(&existing, &run)?;
     // Only clean up a known Canvas mount, never unmount arbitrary filesystems.
     // PM2 can leave a stale kernel mount behind after killing a FUSE process.
     let mounts: Vec<Value> =
@@ -301,7 +413,14 @@ fn action(index: usize, action: &str) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn mount_action(app: AppHandle, index: usize, operation: String) -> Result<(), String> {
-    let result = tauri::async_runtime::spawn_blocking(move || action(index, &operation))
+    if app
+        .try_state::<TrayState>()
+        .is_some_and(|state| state.quitting.load(Ordering::SeqCst))
+    {
+        return Err("Canvas is unmounting and quitting".into());
+    }
+    let worker = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || action(&worker, index, &operation))
         .await
         .map_err(|e| e.to_string())?;
     rebuild_later(&app);
@@ -363,7 +482,11 @@ pub fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
                 m.workspace,
                 m.tree.as_deref().unwrap_or(&m.export)
             );
-            let sub = Submenu::new(app, label, true)?;
+            let sub = Submenu::new(
+                app,
+                label,
+                !app.state::<TrayState>().quitting.load(Ordering::SeqCst),
+            )?;
             for (op, label) in [("start", "Start"), ("stop", "Stop"), ("restart", "Restart")] {
                 sub.append(&MenuItem::with_id(
                     app,
@@ -380,22 +503,117 @@ pub fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
     menu.append(&MenuItem::with_id(
         app,
         "quit",
-        "Quit tray (keep mounts running)",
-        true,
+        "Quit",
+        !app.state::<TrayState>().quitting.load(Ordering::SeqCst),
         None::<&str>,
     )?)?;
+    let state = app.state::<TrayState>();
+    let count = *state.count.lock().unwrap();
+    let item = MenuItem::with_id(
+        app,
+        "quit-unmount",
+        quit_unmount_label(count, state.quitting.load(Ordering::SeqCst)),
+        !state.quitting.load(Ordering::SeqCst),
+        None::<&str>,
+    )?;
+    menu.append(&item)?;
+    *state.unmount_item.lock().unwrap() = Some(item);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_menu(Some(menu))?;
     }
     Ok(())
 }
+fn quit_unmount_label(count: Option<usize>, quitting: bool) -> String {
+    if quitting {
+        "Unmounting mounts…".into()
+    } else {
+        format!(
+            "Quit and unmount all mounts ({})",
+            count.map(|n| n.to_string()).unwrap_or_else(|| "?".into())
+        )
+    }
+}
+fn refresh_mount_count(app: &AppHandle) {
+    let count = if binary("canvas-fuse").is_err() {
+        Some(0)
+    } else {
+        fuse_status_with(&run)
+            .ok()
+            .map(|mounts| active_paths(&mounts).len())
+    };
+    let state = app.state::<TrayState>();
+    if state.quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut old = state.count.lock().unwrap();
+    if *old == count {
+        return;
+    }
+    *old = count;
+    drop(old);
+    let item = state.unmount_item.lock().unwrap().clone();
+    if let Some(item) = item {
+        let _ = item.set_text(quit_unmount_label(count, false));
+    }
+}
+pub fn watch_mount_count(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        refresh_mount_count(&app);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    });
+}
+pub fn quit_and_unmount(app: &AppHandle) {
+    if app
+        .state::<TrayState>()
+        .quitting
+        .swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    let _ = rebuild_tray_menu(app);
+    let app = app.clone();
+    std::thread::spawn(move || match unmount_all() {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            app.state::<TrayState>()
+                .quitting
+                .store(false, Ordering::SeqCst);
+            let _ = crate::open_main_ui(&app, false);
+            app.dialog()
+                .message(format!(
+                    "Could not unmount all mounts. Canvas is still running.\n\n{error}"
+                ))
+                .title("Canvas mounts")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+            let _ = app.emit("mounts:error", &error);
+            let _ = app.emit("mounts:changed", ());
+            rebuild_later(&app);
+        }
+    });
+}
+pub fn quit(app: &AppHandle) {
+    if !app
+        .state::<TrayState>()
+        .quitting
+        .swap(true, Ordering::SeqCst)
+    {
+        app.exit(0);
+    }
+}
 pub fn rebuild_later(app: &AppHandle) {
+    let worker = app.clone();
+    std::thread::spawn(move || refresh_mount_count(&worker));
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let _ = rebuild_tray_menu(&handle);
     });
 }
 pub fn handle_menu_event(app: &AppHandle, id: &str) {
+    if app.state::<TrayState>().quitting.load(Ordering::SeqCst) {
+        return;
+    }
     let Some(rest) = id.strip_prefix("mount:") else {
         return;
     };
@@ -406,16 +624,134 @@ pub fn handle_menu_event(app: &AppHandle, id: &str) {
     let operation = operation.to_string();
     let app = app.clone();
     std::thread::spawn(move || {
-        if let Err(error) = action(index, &operation) {
+        if let Err(error) = action(&app, index, &operation) {
             let _ = app.emit("mounts:error", &error);
             let _ = crate::open_main_ui(&app, false);
         }
         let _ = app.emit("mounts:changed", ());
+        rebuild_later(&app);
     });
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quit_label_counts_distinct_active_mounts_and_handles_zero() {
+        let mounts = vec![
+            json!({"mountpoint":"/mnt/a", "mounted":true}),
+            json!({"mountpoint":"/mnt/a", "alive":true}),
+            json!({"mountpoint":"/mnt/b", "mounted":false, "alive":false}),
+        ];
+        assert_eq!(active_paths(&mounts).len(), 1);
+        assert_eq!(
+            quit_unmount_label(Some(0), false),
+            "Quit and unmount all mounts (0)"
+        );
+        assert_eq!(
+            quit_unmount_label(Some(3), false),
+            "Quit and unmount all mounts (3)"
+        );
+        assert_eq!(quit_unmount_label(Some(3), true), "Unmounting mounts…");
+    }
+    #[test]
+    fn quit_unmount_stops_only_our_pm2_services_and_cleans_all_canvas_mounts() {
+        use std::cell::RefCell;
+        let (mut cfg, mount) = plan("home", "mount");
+        let path = config::mount_path(&cfg, &mount)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        cfg.mounts.push(mount.clone());
+        let processes = vec![
+            json!({"pm_id":7,"name":process_name(&mount)}),
+            json!({"pm_id":8,"name":"unrelated-service"}),
+        ];
+        let calls = RefCell::new(Vec::new());
+        let status_count = std::cell::Cell::new(0);
+        let execute = |name: &str, args: &[String]| {
+            calls.borrow_mut().push((name.to_owned(), args.to_vec()));
+            if args[0] == "status" {
+                let n = status_count.get();
+                status_count.set(n + 1);
+                return Ok(if n == 0 {
+                    json!([{"mountpoint":path,"mounted":true},{"mountpoint":"/mnt/manual-canvas", "mounted":true},{"mountpoint":"/mnt/stale", "alive":false,"mounted":false}]).to_string()
+                } else {
+                    "[]".into()
+                });
+            }
+            Ok(String::new())
+        };
+        unmount_all_with(&cfg, &processes, &execute).unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(calls[1], ("pm2".into(), vec!["delete".into(), "7".into()]));
+        let unmounts: BTreeSet<_> = calls
+            .iter()
+            .filter(|(_, args)| args[0] == "unmount")
+            .map(|(_, args)| args[1].clone())
+            .collect();
+        assert_eq!(
+            unmounts,
+            BTreeSet::from([path, "/mnt/manual-canvas".into()])
+        );
+        assert!(!calls
+            .iter()
+            .any(|(name, args)| name == "pm2" && args[1] == "8"));
+        assert_eq!(status_count.get(), 2);
+    }
+    #[test]
+    fn failed_unmount_attempts_the_remaining_mounts_and_prevents_quit() {
+        use std::cell::RefCell;
+        let (cfg, _) = plan("home", "mount");
+        let attempted = RefCell::new(Vec::new());
+        let execute = |_: &str, args: &[String]| {
+            if args[0] == "status" {
+                return Ok(json!([{"mountpoint":"/mnt/a","mounted":true},{"mountpoint":"/mnt/b","alive":true}]).to_string());
+            }
+            attempted.borrow_mut().push(args[1].clone());
+            if args[1] == "/mnt/a" {
+                Err("Unmount failed: busy".into())
+            } else {
+                Ok(String::new())
+            }
+        };
+        let error = unmount_all_with(&cfg, &[], &execute).unwrap_err();
+        assert!(error.contains("busy"));
+        assert!(error.contains("Mounts still active"));
+        assert_eq!(*attempted.borrow(), vec!["/mnt/a", "/mnt/b"]);
+    }
+    #[test]
+    fn failed_process_stop_still_unmounts_but_does_not_report_success() {
+        let (mut cfg, mount) = plan("home", "mount");
+        cfg.mounts.push(mount.clone());
+        let processes = vec![json!({"pm_id":7,"name":process_name(&mount)})];
+        let unmounted = std::cell::Cell::new(false);
+        let execute = |name: &str, args: &[String]| {
+            if name == "pm2" {
+                return Err("Unable to stop mount process".into());
+            }
+            if args[0] == "unmount" {
+                unmounted.set(true);
+            }
+            Ok("[]".into())
+        };
+        assert!(unmount_all_with(&cfg, &processes, &execute)
+            .unwrap_err()
+            .contains("Unable to stop mount process"));
+        assert!(unmounted.get());
+    }
+    #[test]
+    fn unreadable_inventory_does_not_stop_processes_or_unmount_unknown_paths() {
+        let (cfg, _) = plan("home", "mount");
+        let execute = |name: &str, args: &[String]| {
+            assert_eq!(name, "canvas-fuse");
+            assert_eq!(args, ["status", "--json"]);
+            Err("Status unavailable".into())
+        };
+        assert_eq!(
+            unmount_all_with(&cfg, &[], &execute),
+            Err("Status unavailable".into())
+        );
+    }
     fn plan(export: &str, mode: &str) -> (DesktopConfig, Mount) {
         (
             DesktopConfig {

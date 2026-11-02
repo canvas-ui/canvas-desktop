@@ -59,23 +59,26 @@ if(process.argv.includes('--native')) {
   const command = env.CANVAS_DESKTOP_SMOKE_WM === '1' ? ['sh','-c','xfwm4 --compositor=off >/dev/null 2>&1 & wm=$!; "$1"; result=$?; kill "$wm" 2>/dev/null; exit "$result"','native-fixture',binary] : [binary];
   const native=spawn('dbus-run-session',['--','xvfb-run','-a','-s','-screen 0 1920x1080x24',...command],{env:{...env,CANVAS_DESKTOP_SMOKE_RESULT:phaseResult,CANVAS_DESKTOP_SMOKE_EXPECTED:JSON.stringify(expected || null)},detached:true,stdio:['ignore','pipe','pipe']});
   let logs='';native.stdout.on('data',data=>logs+=data);native.stderr.on('data',data=>logs+=data);
-  const closed = new Promise(resolve => native.once('close', resolve));
+  // Portal services can inherit stdout and keep pipes open after the app exits.
+  // Process exit, rather than stream closure, is the lifecycle assertion.
+  const exited = new Promise(resolve => native.once('exit', resolve));
   try {
    let report;
    for(let i=0;i<600;i++){try{report=JSON.parse(await fs.readFile(phaseResult,'utf8'));break;}catch{}if(native.exitCode!==null)throw new Error(`Native process exited ${native.exitCode}: ${logs}`);await new Promise(r=>setTimeout(r,100));}
    assert.ok(report,`Native result timed out: ${logs}`);assert.equal(report.ok,true,JSON.stringify(report));
    let timeout;
-   try { assert.equal(await Promise.race([closed,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Native exit timed out: '+logs)),10000);})]),0,logs); }
+   try { assert.equal(await Promise.race([exited,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Native exit timed out: '+logs)),10000);})]),0,logs); }
    finally { clearTimeout(timeout); }
    return report;
-  } finally {if(native.exitCode===null)try{process.kill(-native.pid,'SIGTERM');}catch{}}
+  } finally {try{process.kill(-native.pid,'SIGTERM');}catch{}}
  };
  try {
   const first = await launch('save');
   const geometry=JSON.parse(await fs.readFile(path.join(env.CANVAS_USER_HOME,'config/desktop-windows.json'),'utf8'));
   assert.equal(geometry.version,1);assert.ok(Object.keys(geometry.windows).length>=2);
-  const {id,...rect}=first.expected[0];
-  assert.deepEqual(geometry.windows[id].rect,rect,'The final move must be flushed on exit');
+  const {key,...rectWithId}=first.expected[0];
+  const {id,...rect}=rectWithId;
+  assert.deepEqual(geometry.windows[key].rect,rect,'The final move must be flushed on exit');
   const restored = await launch('restore',{windows:first.expected,maximized:first.maximized});
   assert.equal(restored.restarted,true);
   console.log('PASS: native windows, tabs, exact canvas/menu/toolbox bounds, context and panel restoration, quit flush and process restart.');
@@ -118,10 +121,13 @@ for (const digit of [0, 1]) {
  await waitFor(`window.__CANVAS_DESKTOP_UI__.snapshot().menu==='m${digit}'`);
 }
 await navigateTo('/work/customer-foo/ops/snow-12345');
-await waitFor(`document.querySelector('.cw-location')?.textContent.includes('snow-12345') && document.querySelector('[aria-label="Document layout"]')`);
+await waitFor(`document.querySelector('[aria-label="Canvas address"]')?.textContent.includes('snow-12345') && document.querySelector('[aria-label="Document layout"]')`);
+assert.equal(await evaluate(`document.querySelectorAll('.cw-location, .cw-window .canvas-navigation-tabs, .cw-window .canvas-surface-body.is-framed').length`),0);
 // The tab strip follows browser controls: plus, double-click, keyboard and reopen.
 await click('[aria-label="New tab"]');
 await waitFor(`document.querySelector('.cw-tab [role="tab"][aria-selected="true"]')?.textContent.includes('New tab')`);
+assert.equal(await evaluate(`document.querySelectorAll('.cw-window input').length`),1);
+assert.equal(await evaluate(`document.activeElement?.getAttribute('aria-label')`),'Page address');
 await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown',{ctrlKey:true,code:'KeyW'}))`);
 await waitFor(`document.querySelectorAll('.cw-tab').length===1`);
 await evaluate(`document.querySelector('.cw-tabs').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
@@ -135,11 +141,16 @@ await waitFor(`document.querySelectorAll('.cw-tab').length===1`);
 // All content kinds use the shared web list and its actions.
 await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'open-canvas',kind:'emails'})`);
 await waitFor(`document.querySelectorAll('.cw-window').length===2 && document.querySelector('[aria-label="Email canvas"] [aria-label="Document layout"]')`);
+await new Promise(resolve=>setTimeout(resolve,300));
+const queriesBeforeFocus = documentQueries.length;
+for (let i=0;i<8;i++) await evaluate(`(()=>{const frames=document.querySelectorAll('.cw-window');frames[${i%2}].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));})()`);
+await new Promise(resolve=>setTimeout(resolve,300));
+assert.equal(documentQueries.length,queriesBeforeFocus,'Focusing existing windows must not refetch their documents');
 await click('[aria-label="Email canvas"] button[title="Table view"]');
 await click('[aria-label="Email canvas"] [aria-label="Reuse window across navigation"]');
 const pinned = await evaluate(`window.__CANVAS_DESKTOP_UI__.snapshot().layouts[JSON.stringify(['universe','context','context','/work/customer-foo/ops/snow-12345'])].frames.find(f=>f.pinned)`);
 await navigateTo('/work/customer-foo/ops/snow-12346');
-await waitFor(`document.querySelectorAll('.cw-window').length===1 && document.querySelector('[aria-label="Email canvas"] .cw-location').textContent.includes('snow-12346')`);
+await waitFor(`document.querySelectorAll('.cw-window').length===1 && document.querySelector('[aria-label="Email canvas"] [aria-label="Canvas address"]')?.textContent.includes('snow-12346')`);
 assert.equal(await evaluate(`window.__CANVAS_DESKTOP_UI__.snapshot().layouts[JSON.stringify(['universe','context','context','/work/customer-foo/ops/snow-12346'])].frames[0].id`),pinned.id);
 assert.equal(pinned.tabs[0].documentLayout,'table');
 await waitFor(`document.querySelector('[aria-label="Email canvas"] button[title="Table view"][aria-pressed="true"]')`);
@@ -164,6 +175,7 @@ await waitFor(`document.querySelectorAll('.cw-window').length===2`);
 assert.ok(documentQueries.some(q=>q.allOf==='data/schema/message/email'),JSON.stringify(documentQueries));
 await evaluate(`window.__CANVAS_DESKTOP_UI__.dispatch({type:'show-toolbox',mode:'context'})`);
 await waitFor(`document.querySelector('.tb-launcher')`);
+assert.equal(await evaluate(`getComputedStyle(document.querySelector('.tb-launcher')).borderRadius`),'50%');
 // Immediate controls do not need network or native IPC. Observe a paint after
 // the click; this is browser scheduling, not a native end-to-end latency claim.
 const timings=[];

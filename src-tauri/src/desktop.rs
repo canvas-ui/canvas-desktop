@@ -2,7 +2,13 @@
 //! external browser windows never receive these capabilities or credentials.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+};
 mod geometry;
 mod keyboard;
 #[cfg(target_os = "linux")]
@@ -22,7 +28,9 @@ fn win(surface: &WebviewWindow) -> Window {
 /// Main-thread setup: detect the display backend before any window work.
 pub fn init(app: &tauri::AppHandle) {
     kwin::init();
-    for window in app.windows().values() { keyboard::install(window); }
+    for window in app.windows().values() {
+        keyboard::install(window);
+    }
     let app = app.clone();
     std::thread::spawn(move || {
         if let Err(error) = kwin::install_shortcuts(app.clone()) {
@@ -53,6 +61,23 @@ struct Frame {
     title: String,
     pinned: bool,
 }
+/// Titles, active apps and ordinary focus changes do not change window geometry.
+fn needs_reconcile(previous: &Request, next: &Request) -> bool {
+    previous.namespace != next.namespace
+        || previous.scope != next.scope
+        || previous.arrangement != next.arrangement
+        || previous.gap != next.gap
+        || previous.auto_tile != next.auto_tile
+        || previous.placement != next.placement
+        || previous.menu != next.menu
+        || previous.toolbox_open != next.toolbox_open
+        || (next.arrangement == "focus" && previous.focused != next.focused)
+        || !previous
+            .frames
+            .iter()
+            .map(|f| (&f.id, f.pinned))
+            .eq(next.frames.iter().map(|f| (&f.id, f.pinned)))
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 struct Rect {
     x: i32,
@@ -62,13 +87,28 @@ struct Rect {
 }
 #[derive(Default)]
 pub struct DesktopState {
+    operations: tauri::async_runtime::Mutex<()>,
+    prepared: Mutex<Option<String>>,
+    labels: Mutex<BTreeMap<String, String>>,
+    frames: Mutex<BTreeMap<String, String>>,
+    sequence: AtomicU64,
     request: Mutex<Option<Request>>,
     geometry: geometry::GeometryState,
 }
-fn label(request: &Request, id: &str) -> String {
+fn frame_key(request: &Request, id: &str) -> String {
     let identity = serde_json::to_vec(&(&request.namespace, id)).unwrap();
     format!("canvas-{:x}", Sha256::digest(identity))
 }
+fn label(app: &tauri::AppHandle, request: &Request, id: &str) -> String {
+    let key = frame_key(request, id);
+    app.state::<DesktopState>()
+        .labels
+        .lock()
+        .ok()
+        .and_then(|labels| labels.get(&key).cloned())
+        .unwrap_or(key)
+}
+
 fn menu_key(request: &Request) -> String {
     let identity = serde_json::to_vec(&(
         &request.namespace,
@@ -221,7 +261,14 @@ fn show_restored(
     min: (f64, f64),
 ) -> Result<(), String> {
     let was_hidden = !window.is_visible().unwrap_or(true);
+    if !was_hidden {
+        return Ok(());
+    }
     window.show().map_err(|e| e.to_string())?;
+    if window.label().starts_with("canvas-") && window.webviews().len() > 1 {
+        // GTK show_all also reveals background page widgets. Restore tab visibility.
+        urls::layout(app, window.label())?;
+    }
     if was_hidden && kwin::wayland_managed() {
         if let Some(saved) = geometry::load(app)?.get(key) {
             geometry::restore(window, saved, monitors, primary, min)?;
@@ -248,12 +295,21 @@ fn build_surface(
     let builder = tauri::WebviewWindowBuilder::new(app, label, url)
         .title(title)
         .visible(false)
+        .focused(false)
         .decorations(false)
         .inner_size(900.0, 700.0)
         .min_inner_size(
             if canvas { 320.0 } else { 60.0 },
             if canvas { 240.0 } else { 60.0 },
         );
+    let builder = if label == "toolbox" {
+        builder
+            .transparent(true)
+            .background_color(tauri::window::Color(0, 0, 0, 0))
+            .shadow(false)
+    } else {
+        builder
+    };
     #[cfg(feature = "desktop-smoke-test")]
     let builder = if let Ok(profile) = std::env::var("CANVAS_DESKTOP_SMOKE_PROFILE") {
         builder.data_directory(profile.into())
@@ -266,11 +322,43 @@ fn build_surface(
     Ok(window)
 }
 #[tauri::command]
-pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(), String> {
+pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<bool, String> {
+    let state = app.state::<DesktopState>();
+    let _operation = state.operations.lock().await;
     if request.frames.len() > 24 || request.gap > 64 {
         return Err("This foundation supports up to 24 windows per path.".into());
     }
-    urls::retain(&app, &request.browser_tabs).await?;
+    let previous = app
+        .state::<DesktopState>()
+        .request
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    if previous
+        .as_ref()
+        .is_none_or(|old| old.browser_tabs != request.browser_tabs)
+    {
+        urls::retain(&app, &request.browser_tabs).await?;
+    }
+    if let Some(old) = previous
+        .as_ref()
+        .filter(|old| !needs_reconcile(old, &request))
+    {
+        for (before, frame) in old.frames.iter().zip(&request.frames) {
+            if before.title != frame.title {
+                if let Some(window) = app.get_window(&label(&app, &request, &frame.id)) {
+                    window
+                        .set_title(&format!("{} — canvas", frame.title))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        *app.state::<DesktopState>()
+            .request
+            .lock()
+            .map_err(|e| e.to_string())? = Some(request);
+        return Ok(state.prepared.lock().map_err(|e| e.to_string())?.is_none());
+    }
     let main = app.get_window("main").ok_or("Main menu is unavailable")?;
     let monitors = main.available_monitors().map_err(|e| e.to_string())?;
     let primary = main
@@ -279,27 +367,36 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         .or_else(|| monitors.first().cloned())
         .ok_or("No display is available")?;
     let geometry = geometry::load(&app)?;
-    let previous = app
-        .state::<DesktopState>()
-        .request
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
     let switched = previous
         .as_ref()
         .is_none_or(|old| old.scope != request.scope || old.namespace != request.namespace);
     let desired: Vec<_> = request
         .frames
         .iter()
-        .map(|frame| label(&request, &frame.id))
+        .map(|frame| label(&app, &request, &frame.id))
         .collect();
+    if previous
+        .as_ref()
+        .is_some_and(|old| old.namespace != request.namespace)
+    {
+        let prepared = state.prepared.lock().map_err(|e| e.to_string())?.take();
+        if let Some(prepared) = prepared {
+            if let Some(window) = app.get_window(&prepared) {
+                window.destroy().map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let prepared = state.prepared.lock().map_err(|e| e.to_string())?.clone();
     for (id, window) in app.windows() {
+        if prepared.as_ref() == Some(&id) && !desired.contains(&id) {
+            continue;
+        }
         if id.starts_with("canvas-") && !desired.contains(&id) {
             if window.is_visible().unwrap_or(false) {
                 geometry::remember(&window)?;
+                window.hide().map_err(|e| e.to_string())?;
+                kwin::forget(&id);
             }
-            window.hide().map_err(|e| e.to_string())?;
-            kwin::forget(&id);
             // Reuse canvases on return to a recent context, cap dormant webviews.
             if app.windows().len() > request.frames.len() + 10 && window.webviews().len() == 1 {
                 urls::forget_window(&app, &id);
@@ -353,19 +450,37 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     }
 
     for (index, frame) in request.frames.iter().enumerate() {
-        let id = label(&request, &frame.id);
-        let existing = app.get_window(&id);
-        let window = if let Some(window) = existing {
+        let key = frame_key(&request, &frame.id);
+        let mut id = label(&app, &request, &frame.id);
+        if app.get_window(&id).is_none() {
+            let prepared = state.prepared.lock().map_err(|e| e.to_string())?.take();
+            if let Some(prepared) = prepared {
+                state
+                    .labels
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .insert(key.clone(), prepared.clone());
+                id = prepared;
+            }
+        }
+        let window = if let Some(window) = app
+            .get_window(&id)
+            .filter(|_| geometry::bound_key(&app, &id).is_some())
+        {
             window
         } else {
-            let window = win(&build_surface(
-                &app,
-                &id,
-                &format!("{} — canvas", frame.title),
-                surface_url("canvas", &request.scope, &frame.id),
-                true,
-            )?);
-            if let Some(saved) = geometry.get(&id) {
+            let window = if let Some(window) = app.get_window(&id) {
+                window
+            } else {
+                win(&build_surface(
+                    &app,
+                    &id,
+                    &format!("{} — canvas", frame.title),
+                    surface_url("canvas", &request.scope, &frame.id),
+                    true,
+                )?)
+            };
+            if let Some(saved) = geometry.get(&key) {
                 geometry::restore(&window, saved, &monitors, &primary, (320.0, 240.0))?;
             } else {
                 // New windows get a cascading placement without moving existing canvases.
@@ -374,7 +489,7 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
                 let focused = previous
                     .as_ref()
                     .filter(|_| !switched)
-                    .and_then(|old| app.get_window(&label(old, &old.focused)));
+                    .and_then(|old| app.get_window(&label(&app, old, &old.focused)));
                 let monitor = focused
                     .as_ref()
                     .and_then(|w| window_monitor(w, None).ok().flatten())
@@ -403,17 +518,31 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
             }
             window
         };
-        window
-            .set_title(&format!("{} — canvas", frame.title))
-            .map_err(|e| e.to_string())?;
-        if request.arrangement == "focus" && frame.id != request.focused && !frame.pinned {
-            geometry::remember(&window)?;
-            window.hide().map_err(|e| e.to_string())?;
-            kwin::forget(&id);
-        } else {
-            show_restored(&app, &window, &id, &monitors, &primary, (320.0, 240.0))?;
+        if previous
+            .as_ref()
+            .and_then(|old| old.frames.iter().find(|f| f.id == frame.id))
+            .is_none_or(|old| old.title != frame.title)
+        {
+            window
+                .set_title(&format!("{} — canvas", frame.title))
+                .map_err(|e| e.to_string())?;
         }
-        geometry::bind(&window, id)?;
+        if request.arrangement == "focus" && frame.id != request.focused && !frame.pinned {
+            if window.is_visible().unwrap_or(false) {
+                geometry::remember(&window)?;
+                window.hide().map_err(|e| e.to_string())?;
+                kwin::forget(&id);
+            }
+        } else {
+            show_restored(&app, &window, &key, &monitors, &primary, (320.0, 240.0))?;
+        }
+        state
+            .frames
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(id.clone(), frame.id.clone());
+        let _ = app.emit_to(&id, "desktop:bind-frame", &frame.id);
+        geometry::bind(&window, key)?;
     }
     if kwin::managed() {
         kwin::set_state(&main, Some(vec![]), None)?;
@@ -454,36 +583,36 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
             false,
         )?)
     };
-    let focus_window = app.get_window(&label(&request, &request.focused));
+    let focus_window = app.get_window(&label(&app, &request, &request.focused));
     let monitor = focus_window
         .as_ref()
         .and_then(|window| window_monitor(window, None).ok().flatten())
         .unwrap_or(primary);
-    let area = monitor_area(&monitor);
-    let scale = monitor.scale_factor();
-    let width = ((if request.toolbox_open { 310.0 } else { 64.0 }) * scale) as u32;
-    let height = ((if request.toolbox_open {
-        610.0_f64.min(area.height as f64 / scale - 50.0)
-    } else {
-        64.0
-    }) * scale) as u32;
-    let anchor = focus_window
-        .as_ref()
-        .and_then(|window| geometry::capture(window).ok().flatten());
-    let anchor_desktops = anchor.as_ref().and_then(|g| g.desktops.clone());
-    let anchor = anchor.map(|g| g.rect);
-    let x = anchor
-        .map(|rect| rect.x + rect.width as i32 + (16.0 * scale) as i32)
-        .unwrap_or(area.x + area.width as i32 - width as i32 - 20);
-    let y = anchor
-        .map(|rect| rect.y + rect.height as i32 - height as i32)
-        .unwrap_or(area.y + area.height as i32 - height as i32 - 30);
     let toolbox_key = toolbox_key(&request);
     if geometry::bound_key(&app, "toolbox").as_ref() != Some(&toolbox_key) {
         geometry::unbind(&toolbox)?;
         if let Some(saved) = geometry::load(&app)?.get(&toolbox_key) {
             geometry::restore(&toolbox, saved, &monitors, &monitor, (60.0, 60.0))?;
         } else {
+            let area = monitor_area(&monitor);
+            let scale = monitor.scale_factor();
+            let width = ((if request.toolbox_open { 310.0 } else { 64.0 }) * scale) as u32;
+            let height = ((if request.toolbox_open {
+                610.0_f64.min(area.height as f64 / scale - 50.0)
+            } else {
+                64.0
+            }) * scale) as u32;
+            let anchor = focus_window
+                .as_ref()
+                .and_then(|window| geometry::capture(window).ok().flatten());
+            let anchor_desktops = anchor.as_ref().and_then(|g| g.desktops.clone());
+            let anchor = anchor.map(|g| g.rect);
+            let x = anchor
+                .map(|rect| rect.x + rect.width as i32 + (16.0 * scale) as i32)
+                .unwrap_or(area.x + area.width as i32 - width as i32 - 20);
+            let y = anchor
+                .map(|rect| rect.y + rect.height as i32 - height as i32)
+                .unwrap_or(area.y + area.height as i32 - height as i32 - 30);
             toolbox.unmaximize().map_err(|e| e.to_string())?;
             place(
                 &toolbox,
@@ -517,7 +646,11 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
         )?;
     }
     kwin::flush(&app)?;
-    if switched {
+    if switched
+        || previous
+            .as_ref()
+            .is_some_and(|old| old.focused != request.focused)
+    {
         if let Some(window) = focus_window {
             window.set_focus().map_err(|e| e.to_string())?;
         }
@@ -525,7 +658,73 @@ pub async fn desktop_sync(app: tauri::AppHandle, request: Request) -> Result<(),
     if let Some(error) = tile_error.or(place_error) {
         return Err(error);
     }
+    let prepare = state.prepared.lock().map_err(|e| e.to_string())?.is_none();
+    Ok(prepare)
+}
+/// One hidden, bootstrapped UI surface for the next frame that needs a renderer.
+#[tauri::command]
+pub async fn desktop_prepare(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    namespace: String,
+) -> Result<(), String> {
+    if webview.label() != "main" {
+        return Err("Only the menu host prepares canvas windows".into());
+    }
+    let state = app.state::<DesktopState>();
+    let _operation = state.operations.lock().await;
+    let request = state
+        .request
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No active desktop")?;
+    if namespace != request.namespace {
+        return Err("Desktop account changed".into());
+    }
+    if state.prepared.lock().map_err(|e| e.to_string())?.is_some() {
+        return Ok(());
+    }
+    let id = format!("prepared-{}", state.sequence.fetch_add(1, Ordering::SeqCst));
+    let label = frame_key(&request, &id);
+    build_surface(
+        &app,
+        &label,
+        "Canvas — canvas",
+        surface_url("canvas", "", ""),
+        true,
+    )?;
+    *state.prepared.lock().map_err(|e| e.to_string())? = Some(label);
     Ok(())
+}
+#[tauri::command]
+pub fn desktop_frame(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+) -> Result<Option<String>, String> {
+    if !webview.label().starts_with("canvas-") {
+        return Err("Only canvas surfaces have a frame binding".into());
+    }
+    let state = app.state::<DesktopState>();
+    let frame = state
+        .frames
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(webview.label())
+        .cloned();
+    Ok(frame)
+}
+#[cfg(feature = "desktop-smoke-test")]
+pub(crate) fn geometry_key(app: &tauri::AppHandle, id: &str) -> Option<String> {
+    geometry::bound_key(app, id)
+}
+#[cfg(feature = "desktop-smoke-test")]
+pub(crate) fn is_prepared(app: &tauri::AppHandle, id: &str) -> bool {
+    app.state::<DesktopState>()
+        .prepared
+        .lock()
+        .ok()
+        .is_some_and(|prepared| prepared.as_deref() == Some(id))
 }
 #[tauri::command]
 pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
@@ -540,41 +739,59 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
     };
     let main = app.get_window("main").ok_or("Main menu is unavailable")?;
     let monitors = main.available_monitors().map_err(|e| e.to_string())?;
+    // Resolve each window's output once, rather than once per output.
+    let windows: Vec<_> = request
+        .frames
+        .iter()
+        .filter(|frame| {
+            !frame.pinned && (request.arrangement != "focus" || frame.id == request.focused)
+        })
+        .filter_map(|frame| app.get_window(&label(&app, &request, &frame.id)))
+        .filter_map(|window| {
+            window_monitor(&window, None)
+                .ok()
+                .flatten()
+                .map(|monitor| (window, monitor))
+        })
+        .collect();
+    if windows.is_empty() {
+        return Ok(());
+    }
+    let menu = geometry::capture(&main)?.map(|g| g.rect);
+    let pinned: Vec<_> = request
+        .frames
+        .iter()
+        .filter(|frame| frame.pinned)
+        .filter_map(|frame| app.get_window(&label(&app, &request, &frame.id)))
+        .map(|window| geometry::capture(&window))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .map(|g| g.rect)
+        .collect();
     let mut planned = Vec::new();
     for monitor in monitors {
-        let windows: Vec<_> = request
-            .frames
+        let windows: Vec<_> = windows
             .iter()
-            .filter(|frame| !frame.pinned)
-            .filter(|frame| request.arrangement != "focus" || frame.id == request.focused)
-            .filter_map(|frame| app.get_window(&label(&request, &frame.id)))
-            .filter(|window| {
-                window_monitor(window, None)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|current| current.position() == monitor.position())
-            })
+            .filter(|(_, output)| output.position() == monitor.position())
+            .map(|(window, _)| window)
             .collect();
         if windows.is_empty() {
             continue;
         }
-        let focused_label = label(&request, &request.focused);
+        let focused_label = label(&app, &request, &request.focused);
         let mut area = monitor_area(&monitor);
         let scale = monitor.scale_factor();
         // Reserve the menu's actual bounds, including manual moves and top placement.
-        if let Some(menu) = geometry::capture(&main)?.map(|g| g.rect) {
+        if let Some(menu) = menu {
             area = content_area(
                 area,
                 menu,
                 request.placement == "top" && matches!(request.menu.as_str(), "hidden" | "m0"),
             );
         }
-        for frame in request.frames.iter().filter(|frame| frame.pinned) {
-            if let Some(window) = app.get_window(&label(&request, &frame.id)) {
-                if let Some(saved) = geometry::capture(&window)? {
-                    area = avoid(area, saved.rect);
-                }
-            }
+        for rect in &pinned {
+            area = avoid(area, *rect);
         }
         let toolbox_space = if request.toolbox_open
             && windows.iter().any(|window| window.label() == focused_label)
@@ -595,13 +812,17 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
             if rect.width < (320.0 * scale) as u32 || rect.height < (240.0 * scale) as u32 {
                 return Err("Too many windows to tile on this display. Group canvases into tabs or move a window to another display.".into());
             }
-            planned.push((window.clone(), rect));
+            planned.push(((*window).clone(), rect));
         }
     }
     // Validate the whole layout before moving any window.
     for (window, rect) in &planned {
-        window.unmaximize().map_err(|e| e.to_string())?;
-        window.unminimize().map_err(|e| e.to_string())?;
+        if window.is_maximized().map_err(|e| e.to_string())? {
+            window.unmaximize().map_err(|e| e.to_string())?;
+        }
+        if window.is_minimized().map_err(|e| e.to_string())? {
+            window.unminimize().map_err(|e| e.to_string())?;
+        }
         place(window, *rect)?;
     }
     // One KWin round trip for every tile, then record the resulting bounds.
@@ -613,6 +834,9 @@ pub async fn desktop_tile(app: tauri::AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn desktop_hide_surfaces(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<DesktopState>();
+    let _operation = state.operations.lock().await;
+    *state.prepared.lock().map_err(|e| e.to_string())? = None;
     geometry::save_all(&app)?;
     for window in app.windows().values() {
         geometry::unbind(window)?;
@@ -688,9 +912,9 @@ pub fn restore_active(app: &tauri::AppHandle) {
             if request.arrangement == "focus" && frame.id != request.focused && !frame.pinned {
                 continue;
             }
-            let id = label(&request, &frame.id);
+            let id = label(&app, &request, &frame.id);
             if let Some(window) = app.get_window(&id) {
-                reveal(window, &id, (320.0, 240.0));
+                reveal(window, &frame_key(&request, &frame.id), (320.0, 240.0));
             }
         }
         if let Some(toolbox) = app.get_window("toolbox") {
@@ -704,6 +928,13 @@ pub fn restore_active(app: &tauri::AppHandle) {
 pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     let id = window.label();
     if matches!(event, tauri::WindowEvent::Destroyed) {
+        let state = window.app_handle().state::<DesktopState>();
+        if let Ok(mut labels) = state.labels.lock() {
+            labels.retain(|_, physical| physical != id);
+        }
+        if let Ok(mut frames) = state.frames.lock() {
+            frames.remove(id);
+        }
         crate::tls::forget_window(window.app_handle(), id);
         geometry::forget(window.app_handle(), id);
         kwin::forget(id);
@@ -755,6 +986,36 @@ pub fn run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_and_ordinary_focus_do_not_reconcile_geometry() {
+        let old: Request = serde_json::from_value(serde_json::json!({
+            "browserTabs": [], "namespace": "account", "scope": "context", "frames": [
+                {"id":"one", "kind":"content", "title":"Canvas", "pinned":false},
+                {"id":"two", "kind":"content", "title":"Canvas", "pinned":false}
+            ], "focused":"one", "arrangement":"columns", "gap":16,
+            "autoTile":true, "placement":"left", "menu":"m2", "toolboxOpen":false
+        }))
+        .unwrap();
+        let mut next = old.clone();
+        next.frames[0].title = "Website".into();
+        next.frames[0].kind = "browser".into();
+        next.browser_tabs.push("page".into());
+        next.focused = "two".into();
+        assert!(!needs_reconcile(&old, &next));
+        next.frames[0].pinned = true;
+        assert!(needs_reconcile(&old, &next));
+        next = old.clone();
+        next.toolbox_open = true;
+        assert!(needs_reconcile(&old, &next));
+        next = old.clone();
+        next.scope = "another context".into();
+        assert!(needs_reconcile(&old, &next));
+        let mut focus = old.clone();
+        focus.arrangement = "focus".into();
+        next = focus.clone();
+        next.focused = "two".into();
+        assert!(needs_reconcile(&focus, &next));
+    }
     fn clamp(rect: Rect, area: Rect) -> Rect {
         geometry::fit(rect, area, (320, 240))
     }

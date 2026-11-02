@@ -19,9 +19,13 @@ window.addEventListener('DOMContentLoaded', () => {
     };
     const move = async rect => { await invoke('desktop_test_place', rect); await waitFor(async () => equalBounds((await windows()).find(w => w.id === rect.id), rect)); };
     if (window.__NATIVE_GEOMETRY_EXPECTED__) {
-      const { windows: expected, maximized } = window.__NATIVE_GEOMETRY_EXPECTED__;
+      let { windows: expected, maximized } = window.__NATIVE_GEOMETRY_EXPECTED__;
       await waitFor(async () => (await visibleCanvases()).length === 2 && (await windows()).some(w => w.id === 'toolbox' && w.width > 200));
       await sleep(300);
+      const restoredWindows = await windows();
+      const ids = new Map(expected.map(rect => [rect.id, restoredWindows.find(window => window.key === rect.key || window.id === rect.id)?.id]));
+      expected = expected.map(rect => ({ ...rect, id: ids.get(rect.id) || rect.id }));
+      if (maximized) maximized = ids.get(maximized) || maximized;
       if (maximized) {
         await waitFor(async () => (await windows()).some(w => w.id === maximized && w.maximized));
         await invoke('desktop_test_window_state', { id: maximized, action: 'unmaximize' });
@@ -32,9 +36,23 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
     await waitFor(async () => (await visibleCanvases()).length === 1);
+    await waitFor(async () => {
+      const prepared = (await windows()).find(window => window.prepared);
+      // WebKit can discard an evaluation while its initial document is loading.
+      if (!prepared) return false;
+      try { return Number(await invoke('desktop_test_page_eval', {id:prepared.id,script:`Number(!!document.querySelector('[data-prepared="true"]'))`})) === 1; }
+      catch (error) { if (String(error) === 'Fixture page did not evaluate') return false; throw error; }
+    });
+    const preparedBefore = (await windows()).find(window => window.prepared);
+    const navigationMs = {};
+    const coldStart = performance.now();
     ui.dispatch({ type: 'navigate', scope: incident });
-    await waitFor(async () => (await visibleCanvases()).length === 1 && (await windows()).filter(w => w.id.startsWith('canvas-')).length === 2);
+    await waitFor(async () => (await visibleCanvases()).length === 1 && (await windows()).filter(w => w.id.startsWith('canvas-') && !w.prepared).length === 2);
     const before = (await visibleCanvases())[0];
+    check(before.id === preparedBefore.id, 'A fresh context must reuse the prepared renderer');
+    const incidentFrameId = ui.snapshot().layouts[JSON.stringify([incident.workspace, incident.tree, incident.treeType, incident.path])].frames[0].id;
+    await waitFor(async () => Number(await invoke('desktop_test_page_eval', {id: before.id, script: `Number(!!document.querySelector('[aria-label="Canvas address"]'))`})) === 1);
+    navigationMs.coldContextReady = performance.now() - coldStart;
     check(before.width >= 320 && before.height >= 240, 'Canvas geometry is usable');
     const firstBounds = { id: before.id, x: 470, y: 110, width: 820, height: 560 };
     await move(firstBounds);
@@ -48,7 +66,16 @@ window.addEventListener('DOMContentLoaded', () => {
     await waitFor(async () => (await windows()).some(w => w.id === 'toolbox' && w.width > 200));
     await verify([firstBounds], 'Opening the toolbox must preserve canvas bounds');
     const second = (await visibleCanvases()).find(w => w.id !== before.id);
+    check(await invoke('desktop_test_page_eval', {id:before.id,script:`document.querySelector('[data-frame]')?.dataset.frame`}) === JSON.stringify(incidentFrameId), 'Binding a second canvas must not rebind the first window');
     const incidentKey = JSON.stringify([incident.workspace, incident.tree, incident.treeType, incident.path]);
+    const frameBeforeShortcut = ui.snapshot().layouts[incidentKey].frames[0];
+    const siblingBeforeShortcut = ui.snapshot().layouts[incidentKey].frames[1];
+    await invoke('plugin:event|emit_to', {target:{kind:'AnyLabel',label:before.id},event:'desktop:tab-action',payload:'new-tab'});
+    await waitFor(() => ui.snapshot().layouts[incidentKey].frames[0].tabs.length > frameBeforeShortcut.tabs.length);
+    await sleep(200);
+    const afterShortcut = ui.snapshot().layouts[incidentKey].frames;
+    check(afterShortcut[0].tabs.length === frameBeforeShortcut.tabs.length + 1 && JSON.stringify(afterShortcut[1].tabs) === JSON.stringify(siblingBeforeShortcut.tabs), 'A native shortcut must run once in its target window');
+    ui.dispatch({type:'close-tab',frame:incidentFrameId,tab:afterShortcut[0].active});
     const pinnedFrame = ui.snapshot().layouts[incidentKey].frames[1];
     ui.dispatch({ type: 'pin-frame', frame: pinnedFrame.id, pinned: true });
     ui.dispatch({ type: 'navigate', scope: { ...incident, path: '/work/pinned-target' } });
@@ -113,14 +140,35 @@ window.addEventListener('DOMContentLoaded', () => {
     const browserTab = pageFrame.tabs.find(t => t.kind === 'browser');
     const pageId = pageWindow.webviews.find(id => id.startsWith('url-'));
     const marker = script => invoke('desktop_test_page_eval', { id: pageId, script });
+    const pageGeometry = async (host = pageWindow.id) => ({
+      host: JSON.parse(await invoke('desktop_test_page_eval', { id: host, script: `({height:innerHeight,chrome:document.querySelector('.cw-chrome').offsetHeight})` })),
+      page: JSON.parse(await marker(`({height:innerHeight})`)),
+    });
+    const browserGeometry = await pageGeometry();
+    browserGeometry.host.widgets = await invoke('desktop_test_widget', {id: pageWindow.id});
+    browserGeometry.page.widgets = await invoke('desktop_test_widget', {id: pageId});
+    check(Math.abs(browserGeometry.host.height - browserGeometry.host.chrome) <= 2, 'Browser host must occupy only the tab/address chrome: ' + JSON.stringify(browserGeometry));
+    check(Math.abs(browserGeometry.page.height + browserGeometry.host.height - pageWindow.height) <= 2, 'Website must fill the remaining window: ' + JSON.stringify(browserGeometry));
     await marker('window.__canvasSentinel = 123456');
     const contentTab = pageFrame.tabs.find(t => t.kind !== 'browser');
     ui.dispatch({ type: 'activate-tab', frame: pageFrame.id, tab: contentTab.id });
     await sleep(400);
     check((await windows()).find(w => w.id === pageWindow.id).webviews.includes(pageId), 'Switching to content must keep website tabs alive');
+    check(Number(await invoke('desktop_test_page_eval', {id:pageWindow.id,script:'innerHeight'})) === pageWindow.height, 'A content tab must regain the full window height');
+    ui.dispatch({ type: 'navigate', scope: { ...incident, path: '/work/elsewhere' } });
+    await waitFor(async () => (await visibleCanvases()).length === 1);
+    const warmStart = performance.now();
+    ui.dispatch({ type: 'navigate', scope: incident });
+    await waitFor(async () => (await visibleCanvases()).length === 2);
+    await waitFor(async () => Number(await invoke('desktop_test_page_eval', {id:pageWindow.id,script:'innerHeight'})) === pageWindow.height);
+    navigationMs.warmContextReady = performance.now() - warmStart;
+    const hiddenWebsite = await invoke('desktop_test_widget', {id:pageId});
+    check(hiddenWebsite[0].visible === false, 'Restoring a content window must not reveal its background website');
     ui.dispatch({ type: 'activate-tab', frame: pageFrame.id, tab: browserTab.id });
     await sleep(400);
     check(Number(await marker('window.__canvasSentinel')) === 123456, 'Switching back must preserve page JavaScript state');
+    const switchedGeometry = await pageGeometry();
+    check(Math.abs(switchedGeometry.host.height - switchedGeometry.host.chrome) <= 2, 'Switching back must keep the website below only the chrome');
     // Call Rust directly so this tests its lock independently of the frontend queue.
     const raceTab = 'concurrent-open-fixture';
     await Promise.all(Array.from({length:12}, () => invoke('desktop_url_open', { window: pageWindow.id, tab: raceTab, url: 'http://127.0.0.1:1430/__page', chrome: 90 })));
@@ -135,6 +183,11 @@ window.addEventListener('DOMContentLoaded', () => {
     ui.dispatch({ type: 'detach-tab', frame: pageFrame.id, tab: browserTab.id });
     await waitFor(async () => (await visibleCanvases()).length === 3 && (await pageWindows()).some(window => window.id !== pageWindow.id && window.webviews.includes(pageId)));
     check(Number(await marker('window.__canvasSentinel')) === 123456, 'Detaching must move the live page without reloading');
+    const detachedWindow = (await windows()).find(window => window.id !== pageWindow.id && window.webviews.includes(pageId));
+    await move({id:detachedWindow.id,x:600,y:100,width:720,height:430});
+    await waitFor(async () => {const geometry=await pageGeometry(detachedWindow.id);return Math.abs(geometry.host.height-geometry.host.chrome)<=2 && Math.abs(geometry.page.height+geometry.host.height-430)<=2;});
+    const detachedGeometry = await pageGeometry(detachedWindow.id);
+    check(Math.abs(detachedGeometry.host.height - detachedGeometry.host.chrome) <= 2 && Math.abs(detachedGeometry.page.height + detachedGeometry.host.height - 430) <= 2, 'Detached websites must fit a smaller window without a top gap: ' + JSON.stringify(detachedGeometry));
     const detachedFrame = ui.snapshot().layouts[layoutKey].frames.find(frame => frame.tabs.some(tab => tab.id === browserTab.id));
     ui.dispatch({ type: 'close-tab', frame: detachedFrame.id, tab: browserTab.id });
     await waitFor(async () => (await pageWindows()).length === 0);
@@ -144,6 +197,8 @@ window.addEventListener('DOMContentLoaded', () => {
     await waitFor(async () => (await windows()).some(w => w.visible && w.title === 'Terminal — canvas'));
     const terminalWindow = (await windows()).find(w => w.visible && w.title === 'Terminal — canvas');
     const terminalEval = script => invoke('desktop_test_page_eval', { id: terminalWindow.id, script });
+    const toolboxStyle = JSON.parse(await invoke('desktop_test_page_eval', { id: 'toolbox', script: `({radius:getComputedStyle(document.querySelector('.tb-launcher')).borderRadius,backgrounds:[document.documentElement,document.body,document.querySelector('#root'),document.querySelector('.ds-root')].map(element=>getComputedStyle(element).backgroundColor)})` }));
+    check(toolboxStyle.radius === '50%' && toolboxStyle.backgrounds.every(color => color === 'rgba(0, 0, 0, 0)'), 'Toolbox launcher must be round with transparent host surfaces: ' + JSON.stringify(toolboxStyle));
     await waitFor(async () => Number(await terminalEval(`Number(!!document.querySelector('[aria-label="Terminal app"] form'))`)) === 1);
     await terminalEval(`document.querySelector('[aria-label="Terminal app"] form').requestSubmit(); true`);
     const terminalScope = JSON.stringify([JSON.stringify(['http://127.0.0.1:1430','test']), JSON.stringify(['workspace', 'universe', 'context', 'context', incident.path])]);
@@ -152,6 +207,11 @@ window.addEventListener('DOMContentLoaded', () => {
     await invoke('terminal_write', { id: shell.id, data: Array.from(new TextEncoder().encode("cd /tmp; export CANVAS_SESSION_TEST=preserved; printf 'READY_%s\\n' \"$CANVAS_SESSION_TEST\"\r")) });
     let terminalText = '';
     await waitFor(async () => { terminalText = new TextDecoder().decode(Uint8Array.from((await invoke('terminal_read', { id: shell.id, offset: 0 })).data)); return terminalText.includes('READY_preserved'); });
+    await waitFor(async () => Number(await terminalEval(`Number(document.querySelector('.xterm-rows')?.textContent.includes('READY_preserved'))`)) === 1);
+    const sibling = await invoke('terminal_create', { scope: terminalScope, cwd: '/tmp' });
+    await waitFor(async () => Number(await terminalEval(`document.querySelectorAll('[aria-label="Terminal sessions"] [role="tab"]').length`)) === 2);
+    await invoke('terminal_close', { id: sibling.id });
+    await waitFor(async () => Number(await terminalEval(`document.querySelectorAll('[aria-label="Terminal sessions"] [role="tab"]').length`)) === 1);
     ui.dispatch({ type: 'navigate', scope: { ...incident, path: '/work/autohub' } });
     await waitFor(async () => (await visibleCanvases()).length === 1);
     const otherScope = JSON.stringify([JSON.stringify(['http://127.0.0.1:1430','test']), JSON.stringify(['workspace', 'universe', 'context', 'context', '/work/autohub'])]);
@@ -162,13 +222,15 @@ window.addEventListener('DOMContentLoaded', () => {
     check((await invoke('terminal_list', { scope: terminalScope }))[0].id === shell.id, 'Returning must reattach the same shell');
     await invoke('terminal_write', { id: shell.id, data: Array.from(new TextEncoder().encode("printf 'RETURN_%s_%s\\n' \"$CANVAS_SESSION_TEST\" \"$PWD\"\r")) });
     await waitFor(async () => new TextDecoder().decode(Uint8Array.from((await invoke('terminal_read', { id: shell.id, offset: 0 })).data)).includes('RETURN_preserved_/tmp'));
+    await waitFor(async () => Number(await terminalEval(`Number(document.querySelector('.xterm-rows')?.textContent.includes('RETURN_preserved_/tmp'))`)) === 1);
     await invoke('terminal_resize', { id: shell.id, cols: 110, rows: 35 });
     await invoke('terminal_close', { id: shell.id });
     await invoke('terminal_close', { id: otherShell.id });
     // Move just before quitting: ExitRequested must flush without a JS debounce delay.
     expected[0] = { ...firstBounds, x: 495, y: 135, width: 790, height: 545 };
     await move(expected[0]);
-    await invoke('desktop_test_result', { result: { ok: true, expected, maximized, windows: await windows(), menuClickToFrameMs: timings, concurrentPageOpens: 12, pageStatePreserved: true, terminalContextSessions: true } });
+    const windowKeys = new Map((await windows()).map(window => [window.id, window.key]));
+    await invoke('desktop_test_result', { result: { ok: true, expected: expected.map(rect => ({ ...rect, key: windowKeys.get(rect.id) })), maximized, windows: await windows(), menuClickToFrameMs: timings, navigationMs, browserGeometry, detachedGeometry, concurrentPageOpens: 12, pageStatePreserved: true, terminalContextSessions: true } });
   }
   run().catch(async error => {
     // Report through IPC; if IPC itself is broken, the fixture server logs the failure.

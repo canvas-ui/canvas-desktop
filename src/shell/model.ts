@@ -22,7 +22,7 @@ function createFrame(kind: CanvasKind = 'content'): Frame {
   const canvas = newCanvas(kind);
   return { id: crypto.randomUUID(), tabs: [canvas], active: canvas.id };
 }
-export function navigate(state: DesktopState, scope: Scope): DesktopState {
+export function navigate(state: DesktopState, scope: Scope, initialFrame?: Frame): DesktopState {
   scope = { ...scope, path: normalizePath(scope.path) };
   const key = scopeKey(scope);
   const previousKey = state.scope ? scopeKey(state.scope) : '';
@@ -40,13 +40,13 @@ export function navigate(state: DesktopState, scope: Scope): DesktopState {
   }
   const target = layouts[key];
   const frames = [...pinned, ...(target?.frames || [])];
-  if (!target && !frames.length) frames.push(createFrame());
+  if (!target && !frames.length) frames.push(initialFrame || createFrame());
   layouts[key] = { frames, focused: pinned.find(frame => frame.id === previous?.focused)?.id || target?.focused || frames[0]?.id || '', arrangement: target?.arrangement || previous?.arrangement || 'columns' };
   return { ...state, scope, menu: 'm2', layouts };
 }
 /** Navigate the tree while preserving page query/hash state in the destination tab. */
-export function navigateLocation(state: DesktopState, scope: Scope, location: string, frameId?: string, tabId?: string): DesktopState {
-  const next = navigate(state, scope);
+export function navigateLocation(state: DesktopState, scope: Scope, location: string, frameId?: string, tabId?: string, initialFrame?: Frame): DesktopState {
+  const next = navigate(state, scope, initialFrame);
   return updateLayout(next, scopeKey(scope), layout => {
     const frame = layout.frames.find(frame => frame.id === frameId) || layout.frames.find(frame => frame.id === layout.focused);
     if (!frame) return layout;
@@ -56,7 +56,8 @@ export function navigateLocation(state: DesktopState, scope: Scope, location: st
 }
 export function updateLayout(state: DesktopState, key: string, update: (layout: Layout) => Layout): DesktopState {
   if (!state.layouts[key]) return state;
-  return { ...state, layouts: { ...state.layouts, [key]: update(state.layouts[key]) } };
+  const layout = update(state.layouts[key]);
+  return layout === state.layouts[key] ? state : { ...state, layouts: { ...state.layouts, [key]: layout } };
 }
 /** Native focus notifications can outlive a closed or hidden frame. */
 export function focusFrame(state: DesktopState, frameId: string): DesktopState {
@@ -66,13 +67,13 @@ export function focusFrame(state: DesktopState, frameId: string): DesktopState {
   if (!layout || layout.focused === frameId || !layout.frames.some(frame => frame.id === frameId)) return state;
   return updateLayout(state, key, layout => ({ ...layout, focused: frameId }));
 }
-export function addCanvas(layout: Layout, kind: CanvasKind, asTab = false): Layout {
+export function addCanvas(layout: Layout, kind: CanvasKind, asTab = false, initialFrame?: Frame): Layout {
   const focused = layout.frames.find(frame => frame.id === layout.focused);
   if (asTab && focused) {
-    const canvas = newCanvas(kind);
+    const canvas = initialFrame?.tabs[0] || newCanvas(kind);
     return { ...layout, frames: layout.frames.map(frame => frame.id === focused.id ? { ...frame, tabs: [...frame.tabs, canvas], active: canvas.id } : frame) };
   }
-  const frame = createFrame(kind);
+  const frame = initialFrame || createFrame(kind);
   return { ...layout, focused: frame.id, frames: [...layout.frames, frame] };
 }
 /// A web page as a canvas tab. Empty url shows the address form.
@@ -112,11 +113,11 @@ export function routeScope(location: string, treeType: (tree: string) => string)
 }
 /// Open a canvas from inside a frame: as a tab of that frame (the default),
 /// or to the side as a new frame right after it (shift+click).
-export function openTab(layout: Layout, canvas: Canvas, options: { frame?: string; side?: boolean } = {}): Layout {
+export function openTab(layout: Layout, canvas: Canvas, options: { frame?: string; side?: boolean; id?: string } = {}): Layout {
   const sourceId = options.frame && layout.frames.some(frame => frame.id === options.frame) ? options.frame : layout.focused;
   const index = layout.frames.findIndex(frame => frame.id === sourceId);
   if (options.side || index < 0) {
-    const frame: Frame = { id: crypto.randomUUID(), tabs: [canvas], active: canvas.id };
+    const frame: Frame = { id: options.id || crypto.randomUUID(), tabs: [canvas], active: canvas.id };
     const frames = [...layout.frames];
     frames.splice(index < 0 ? frames.length : index + 1, 0, frame);
     return { ...layout, frames, focused: frame.id };
@@ -124,6 +125,8 @@ export function openTab(layout: Layout, canvas: Canvas, options: { frame?: strin
   return { ...layout, focused: sourceId, frames: layout.frames.map(frame => frame.id === sourceId ? { ...frame, tabs: [...frame.tabs, canvas], active: canvas.id } : frame) };
 }
 export function patchTab(layout: Layout, frameId: string, tabId: string, patch: Partial<Canvas>): Layout {
+  const current = layout.frames.find(frame => frame.id === frameId)?.tabs.find(tab => tab.id === tabId);
+  if (!current || Object.entries(patch).every(([key, value]) => current[key as keyof Canvas] === value)) return layout;
   return { ...layout, frames: layout.frames.map(frame => frame.id === frameId ? { ...frame, tabs: frame.tabs.map(tab => tab.id === tabId ? { ...tab, ...patch } : tab) } : frame) };
 }
 export function closeTab(layout: Layout, frameId: string, tabId: string): Layout {
@@ -134,12 +137,12 @@ export function closeTab(layout: Layout, frameId: string, tabId: string): Layout
   }).filter(frame => frame.tabs.length);
   return { ...layout, frames, focused: frames.some(frame => frame.id === layout.focused) ? layout.focused : frames[0]?.id || '' };
 }
-export function detachTab(layout: Layout, frameId: string, tabId: string): Layout {
+export function detachTab(layout: Layout, frameId: string, tabId: string, id: string = crypto.randomUUID()): Layout {
   const from = layout.frames.find(frame => frame.id === frameId);
   const tab = from?.tabs.find(tab => tab.id === tabId);
   if (!tab || from!.tabs.length < 2) return layout;
   const next = closeTab(layout, frameId, tabId);
-  const frame = { id: crypto.randomUUID(), tabs: [tab], active: tab.id };
+  const frame = { id, tabs: [tab], active: tab.id };
   return { ...next, focused: frame.id, frames: [...next.frames, frame] };
 }
 export function cycleMenu(menu: DesktopState['menu']): DesktopState['menu'] {
@@ -147,7 +150,9 @@ export function cycleMenu(menu: DesktopState['menu']): DesktopState['menu'] {
 }
 export function parseState(raw: string | null): DesktopState {
   if (!raw) return initialState();
-  const value = JSON.parse(raw) as DesktopState;
+  return validateState(JSON.parse(raw));
+}
+export function validateState(value: DesktopState): DesktopState {
   if (value.version !== 2 || !value.layouts || typeof value.layouts !== 'object' || Array.isArray(value.layouts)) throw new Error('Unsupported desktop layout version. Your saved layout has been left untouched.');
   if (!['hidden', 'm2', 'm1', 'm0'].includes(value.menu) || !['left', 'top'].includes(value.placement) || ![8, 16, 24].includes(value.gap)
     || typeof value.autoTile !== 'boolean'
@@ -155,7 +160,7 @@ export function parseState(raw: string | null): DesktopState {
   if (value.scope && (value.scope.mode !== 'explorer' || !['workspace', 'tree', 'treeType', 'path'].every(key => typeof value.scope![key as keyof Scope] === 'string'))) throw new Error('Invalid saved location.');
   if (value.closedTabs !== undefined && (!Array.isArray(value.closedTabs) || value.closedTabs.some(row => !row || typeof row.key !== 'string' || typeof row.frame !== 'string' || !row.tab || typeof row.tab.id !== 'string' || !Number.isInteger(row.index)))) throw new Error('Invalid recently closed tabs.');
   const ids = new Set<string>();
-  for (const layout of Object.values(value.layouts)) {
+  for (const [key, layout] of Object.entries(value.layouts)) {
     if (!layout || !Array.isArray(layout.frames) || !['columns', 'grid', 'focus'].includes(layout.arrangement)) throw new Error('Invalid saved canvas layout.');
     for (const frame of layout.frames) {
       if (frame?.pinned !== undefined && typeof frame.pinned !== 'boolean') throw new Error('Invalid canvas pin.');
@@ -172,19 +177,19 @@ export function parseState(raw: string | null): DesktopState {
     }
     if (typeof layout.focused !== 'string') throw new Error('Invalid focused canvas window.');
     // Selection can outlive a native window; the frames and tabs remain authoritative.
-    if (!layout.frames.some(frame => frame.id === layout.focused)) layout.focused = layout.frames[0]?.id || '';
+    if (!layout.frames.some(frame => frame.id === layout.focused)) value = { ...value, layouts: { ...value.layouts, [key]: { ...layout, focused: layout.frames[0]?.id || '' } } };
   }
   return value;
 }
 
 export type TabAction = 'new-tab' | 'new-window' | 'close-tab' | 'next-tab' | 'previous-tab' | 'reopen-tab' | `select-${number}`;
-export function tabAction(state: DesktopState, action: TabAction, frameId?: string): DesktopState {
-  const ready = state.scope ? state : navigate(state, { mode: 'explorer', workspace: '', tree: 'context', treeType: 'context', path: '/' });
+export function tabAction(state: DesktopState, action: TabAction, frameId?: string, initialFrame?: Frame, initialScopeFrame?: Frame): DesktopState {
+  const ready = state.scope ? state : navigate(state, { mode: 'explorer', workspace: '', tree: 'context', treeType: 'context', path: '/' }, initialScopeFrame);
   if (action === 'reopen-tab') {
     const closed = ready.closedTabs?.[ready.closedTabs.length - 1];
     if (!closed) return ready;
     const [workspace, tree, treeType, path] = JSON.parse(closed.key);
-    const restored = navigate({ ...ready, closedTabs: ready.closedTabs!.slice(0, -1) }, { mode: 'explorer', workspace, tree, treeType, path });
+    const restored = navigate({ ...ready, closedTabs: ready.closedTabs!.slice(0, -1) }, { mode: 'explorer', workspace, tree, treeType, path }, initialFrame);
     return updateLayout(restored, closed.key, layout => {
       const frame = layout.frames.find(frame => frame.id === closed.frame);
       if (!frame) return { ...layout, frames: [...layout.frames, { id: closed.frame, tabs: [closed.tab], active: closed.tab.id }], focused: closed.frame };
@@ -201,7 +206,7 @@ export function tabAction(state: DesktopState, action: TabAction, frameId?: stri
   }
   return updateLayout(ready, key, layout => {
     const frame = layout.frames.find(frame => frame.id === frameId) || layout.frames.find(frame => frame.id === layout.focused);
-    if (action === 'new-tab' || action === 'new-window') return openTab(layout, browserCanvas(), { frame: frame?.id, side: action === 'new-window' });
+    if (action === 'new-tab' || action === 'new-window') return openTab(layout, initialFrame?.tabs[0] || browserCanvas(), { frame: frame?.id, side: action === 'new-window', id: initialFrame?.id });
     if (!frame) return layout;
     const index = frame.tabs.findIndex(tab => tab.id === frame.active);
     const next = action === 'next-tab' ? (index + 1) % frame.tabs.length : action === 'previous-tab' ? (index + frame.tabs.length - 1) % frame.tabs.length : action === 'select-9' ? frame.tabs.length - 1 : Number(action.slice(7)) - 1;

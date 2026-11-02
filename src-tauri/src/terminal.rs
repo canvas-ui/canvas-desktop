@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
     },
 };
-use tauri::{Manager, Webview};
+use tauri::{ipc::Channel, Emitter, Manager, Webview};
 const CAPACITY: usize = 4 * 1024 * 1024;
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
@@ -31,6 +31,7 @@ struct Session {
 struct Output {
     bytes: VecDeque<u8>,
     end: u64,
+    subscribers: BTreeMap<u64, (String, Channel<ReadResult>)>,
 }
 impl Output {
     fn append(&mut self, data: &[u8]) {
@@ -56,6 +57,16 @@ impl Output {
             running: false,
         }
     }
+    fn publish(&mut self, data: &[u8], running: bool) {
+        let message = ReadResult {
+            offset: self.end,
+            start: self.end - data.len() as u64,
+            data: data.to_vec(),
+            running,
+        };
+        self.subscribers
+            .retain(|_, (_, channel)| channel.send(message.clone()).is_ok());
+    }
 }
 #[derive(Serialize)]
 pub struct SessionInfo {
@@ -63,7 +74,7 @@ pub struct SessionInfo {
     cwd: String,
     running: bool,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ReadResult {
     offset: u64,
     start: u64,
@@ -76,6 +87,13 @@ fn trusted(view: &Webview) -> Result<(), String> {
         Ok(())
     } else {
         Err("Terminals are available only to the Canvas UI".into())
+    }
+}
+fn sessions_changed(app: &tauri::AppHandle, scope: &str) {
+    for (label, view) in app.webviews() {
+        if trusted(&view).is_ok() {
+            let _ = app.emit_to(label, "terminal:sessions", scope);
+        }
     }
 }
 fn terminate(session: &Session) {
@@ -194,7 +212,10 @@ pub async fn terminal_create(
     });
     drop(pair.slave);
     sessions.insert(id, session.clone());
+    drop(sessions);
+    sessions_changed(&app, &session.scope);
     let output = session.clone();
+    let events = app.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut chunk = [0u8; 16384];
@@ -204,15 +225,71 @@ pub async fn terminal_create(
             }
             if let Ok(mut buffer) = output.output.lock() {
                 buffer.append(&chunk[..count]);
+                buffer.publish(&chunk[..count], true);
             }
         }
-        output.running.store(false, Ordering::SeqCst);
+        if let Ok(mut buffer) = output.output.lock() {
+            output.running.store(false, Ordering::SeqCst);
+            buffer.publish(&[], false);
+        }
+        sessions_changed(&events, &output.scope);
     });
     std::thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(info(&session))
 }
+#[tauri::command]
+pub async fn terminal_subscribe(
+    app: tauri::AppHandle,
+    webview: Webview,
+    id: String,
+    channel: Channel<ReadResult>,
+) -> Result<u64, String> {
+    trusted(&webview)?;
+    let session = session(&app, &id)?;
+    let mut output = session.output.lock().map_err(|e| e.to_string())?;
+    // Replay and subscribe under the same lock: no output can fall between them.
+    let mut offset = 0;
+    loop {
+        let mut replay = output.read(offset);
+        offset = replay.offset;
+        replay.running = offset < output.end || session.running.load(Ordering::SeqCst);
+        channel.send(replay).map_err(|e| e.to_string())?;
+        if offset == output.end {
+            break;
+        }
+    }
+    let subscription = SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    output
+        .subscribers
+        .retain(|_, (label, _)| app.get_webview(label).is_some());
+    output
+        .subscribers
+        .insert(subscription, (webview.label().into(), channel));
+    Ok(subscription)
+}
+#[tauri::command]
+pub async fn terminal_unsubscribe(
+    app: tauri::AppHandle,
+    webview: Webview,
+    id: String,
+    subscription: u64,
+) -> Result<(), String> {
+    trusted(&webview)?;
+    if let Ok(session) = session(&app, &id) {
+        let mut output = session.output.lock().map_err(|e| e.to_string())?;
+        if output
+            .subscribers
+            .get(&subscription)
+            .is_some_and(|(label, _)| label == webview.label())
+        {
+            output.subscribers.remove(&subscription);
+        }
+    }
+    Ok(())
+}
+#[cfg(feature = "desktop-smoke-test")]
 #[tauri::command]
 pub async fn terminal_read(
     app: tauri::AppHandle,
@@ -278,14 +355,15 @@ pub async fn terminal_close(
     id: String,
 ) -> Result<(), String> {
     trusted(&webview)?;
-    if let Some(session) = app
+    let removed = app
         .state::<TerminalState>()
         .sessions
         .lock()
         .map_err(|e| e.to_string())?
-        .remove(&id)
-    {
+        .remove(&id);
+    if let Some(session) = removed {
         terminate(&session);
+        sessions_changed(&app, &session.scope);
     }
     Ok(())
 }

@@ -26,7 +26,7 @@ pub(super) fn install(window: &tauri::Window) {
             .and_then(|request| {
                 request.as_ref().map(|request| {
                     request.frames.iter().any(|frame| {
-                        frame.kind == "browser" && super::label(request, &frame.id) == label
+                        frame.kind == "browser" && super::label(&app, request, &frame.id) == label
                     })
                 })
             })

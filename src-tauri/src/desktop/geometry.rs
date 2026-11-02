@@ -115,6 +115,9 @@ pub(super) fn bound_key(app: &tauri::AppHandle, label: &str) -> Option<String> {
 }
 
 pub(super) fn bind(window: &Window, key: String) -> Result<(), String> {
+    if bound_key(window.app_handle(), window.label()).as_ref() == Some(&key) {
+        return Ok(());
+    }
     window
         .app_handle()
         .state::<DesktopState>()
@@ -123,7 +126,11 @@ pub(super) fn bind(window: &Window, key: String) -> Result<(), String> {
         .lock()
         .map_err(|e| e.to_string())?
         .insert(window.label().into(), key);
-    remember(window)
+    // Capture after compositor placement instead of blocking surface creation.
+    if window.is_visible().unwrap_or(false) {
+        remember_later(window.app_handle(), window.label());
+    }
+    Ok(())
 }
 
 pub(super) fn unbind(window: &Window) -> Result<(), String> {

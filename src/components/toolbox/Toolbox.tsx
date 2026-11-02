@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowUpRight, Bot, Check, ChevronDown, Clock3, Columns2, Command, Grid2X2, Layers3, Plus, Settings2, SlidersHorizontal, X } from 'lucide-react';
-import { addCanvas, scopeKey, scopeUrl, updateLayout } from '../../shell/model';
+import { scopeKey, scopeUrl } from '../../shell/model';
 import { canvasIcons, canvasNames } from '../canvas-window/CanvasWindow';
 import type { CanvasKind } from '../../desktop-state';
 import type { DesktopServices } from '../../shell/integration';
@@ -37,10 +37,10 @@ function Agents({ client, report }: DesktopServices) {
 export function Toolbox(services: DesktopServices) {
   const { state, store, scope, layout, report } = services;
   const [asTab, setAsTab] = useState(false);
-  const update = (patch: Partial<typeof state.toolbox>) => { try { store.update(old => ({ ...old, toolbox: { ...old.toolbox, ...patch } })); } catch (e) { report(e); } };
+  const update = (patch: Partial<typeof state.toolbox>) => { try { store.dispatch({ type: 'toolbox', patch }); } catch (e) { report(e); } };
   function add(kind: CanvasKind) {
     if (!scope) return;
-    try { store.update(old => updateLayout(old, scopeKey(scope), layout => addCanvas(layout, kind, asTab))); } catch (e) { report(e); }
+    try { store.dispatch({ type: 'open-canvas', key: scopeKey(scope), kind, asTab }); } catch (e) { report(e); }
   }
   return <div className={`tb-container ${state.toolbox.open ? 'is-open' : ''}`} onPointerDown={event => {
     if (services.native && event.button === 0 && event.target === event.currentTarget) void getCurrentWindow().startDragging().catch(report);
@@ -55,7 +55,7 @@ export function Toolbox(services: DesktopServices) {
       {state.toolbox.page === 'agents' ? <Agents {...services} /> : state.toolbox.mode === 'global' ? <div className="tb-global"><Clock /><button className="tb-wide-action" onClick={() => update({ page: 'agents' })}><Bot size={16} /> Your agents <ArrowUpRight size={13} /></button><button className="tb-wide-action" onClick={services.settings}><Settings2 size={16} /> Desktop preferences <ArrowUpRight size={13} /></button></div> : <>
         <div className="tb-context-path"><span className="ds-live-dot" /><span>{scope ? scopeUrl(scope) : 'Choose a workspace'}</span></div>
         <div className="tb-section"><div className="tb-label">OPEN A CANVAS <label><input type="checkbox" checked={asTab} onChange={event => setAsTab(event.target.checked)} /> as tab</label></div><div className="tb-kind-grid">{kinds.map(kind => { const Icon = canvasIcons[kind]; return <button key={kind} disabled={!scope} onClick={() => add(kind)}><Icon size={18} strokeWidth={1.5} /><span>{canvasNames[kind]}</span><Plus size={11} /></button>; })}</div></div>
-        <div className="tb-section"><div className="tb-label">ARRANGE YOUR SPACE <span>{layout?.frames.length || 0} windows</span></div><div className="tb-arrangements">{([{ id: 'columns', icon: Columns2, name: 'Columns' }, { id: 'grid', icon: Grid2X2, name: 'Grid' }, { id: 'focus', icon: Layers3, name: 'Focus' }] as const).map(({ id, icon: Icon, name }) => <button key={id} aria-pressed={layout?.arrangement === id} disabled={!scope} onClick={() => { if (scope) { store.update(old => updateLayout(old, scopeKey(scope), layout => ({ ...layout, arrangement: id }))); if (layout?.arrangement === id) services.tile(); } }}><Icon size={17} /><span>{name}</span></button>)}</div></div>
+        <div className="tb-section"><div className="tb-label">ARRANGE YOUR SPACE <span>{layout?.frames.length || 0} windows</span></div><div className="tb-arrangements">{([{ id: 'columns', icon: Columns2, name: 'Columns' }, { id: 'grid', icon: Grid2X2, name: 'Grid' }, { id: 'focus', icon: Layers3, name: 'Focus' }] as const).map(({ id, icon: Icon, name }) => <button key={id} aria-pressed={layout?.arrangement === id} disabled={!scope} onClick={() => { if (scope) { store.dispatch({ type: 'arrangement', key: scopeKey(scope), arrangement: id }); if (layout?.arrangement === id) services.tile(); } }}><Icon size={17} /><span>{name}</span></button>)}</div></div>
         <button className="tb-wide-action tb-agent-action" onClick={() => update({ page: 'agents' })}><Bot size={16} /><span>Ask an agent</span><kbd>ctrl alt A</kbd></button>
       </>}
       <footer><span className="ds-live-dot" />{state.toolbox.mode === 'context' ? 'Follows your context' : 'Always within reach'}<ChevronDown size={12} /></footer>

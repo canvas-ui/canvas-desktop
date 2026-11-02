@@ -35,4 +35,11 @@ export default defineConfig({
   },
   server: { port: 1420, strictPort: true, host: process.env.TAURI_DEV_HOST || false, fs: { allow: ['..'] }, watch: { ignored: ['**/src-tauri/**'] } },
   clearScreen: false,
+  build: { rollupOptions: { output: {
+    // Keep web-only bootstrap code out of modules shared with native surfaces.
+    onlyExplicitManualChunks: true,
+    manualChunks(id) {
+      if (id === `${web}/src/App.tsx` || id.endsWith('/src/shell/WebApp.tsx')) return 'WebApp';
+    },
+  } } },
 });
